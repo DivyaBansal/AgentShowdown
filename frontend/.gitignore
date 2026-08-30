@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+*.local
+
+# TypeScript incremental build state
+*.tsbuildinfo

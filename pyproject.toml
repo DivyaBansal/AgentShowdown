@@ -1,0 +1,83 @@
+[project]
+name = "agentshowdown"
+version = "0.1.0"
+description = "Production Python app skeleton with security, testing, and CI/CD baked in"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "pydantic>=2.9",
+    "structlog>=24.4",
+    "opentelemetry-distro>=0.48b0",
+    "opentelemetry-exporter-otlp>=1.27",
+    "uvicorn[standard]>=0.52.4",
+    "pyyaml>=6.0.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.115",
+    "ty>=0.0.1a14",
+    "ruff>=0.7",
+    "bandit>=1.7.10",
+    "pip-audit>=2.7",
+    "httpx>=0.28.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentshowdown"]
+
+# ---- Ruff: lint + format (replaces flake8, isort, black, and a chunk of bandit) ----
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle/pyflakes core
+    "I",             # isort
+    "S",             # bandit-equivalent security rules
+    "B",             # bugbear (common footguns)
+    "UP",            # pyupgrade (modern syntax)
+    "PT",            # pytest style
+    "TID",           # tidy imports
+    "TCH",           # typing-only imports
+    "ANN",           # require type annotations
+    "PERF",          # performance anti-patterns
+    "PL",            # pylint subset
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "ANN"]  # allow asserts and skip strict annotations in tests
+
+# ---- ty: fast type checking (Astral), source of truth in CI ----
+# ty checks unannotated function bodies too (unlike mypy's default), so
+# there's no separate "strict" flag to set — this is the strict behavior.
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.rules]
+# Bump anything you want to be a hard failure rather than a warning.
+possibly-missing-import = "error"
+unused-ignore-comment = "warn"
+
+# ---- pytest ----
+[tool.pytest.ini_options]
+addopts = "--cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=80"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+branch = true
+source = ["src"]
+
+# ---- Bandit (full pass, supplements Ruff's S-rules in CI) ----
+[tool.bandit]
+exclude_dirs = ["tests"]

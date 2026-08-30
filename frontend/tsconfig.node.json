@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    // `tsc -b` treats this as a referenced project, which requires
+    // composite: true — and a composite project may not disable emit.
+    // Declarations go to a temp dir so nothing lands in the source tree.
+    "composite": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "./node_modules/.tmp/node-types",
+
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "strict": true
+  },
+  "include": ["vite.config.ts"]
+}
