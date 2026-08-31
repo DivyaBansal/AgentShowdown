@@ -1,0 +1,49 @@
+# Demo backlog: real features from langlearn's own German-practice app,
+# arranged to show both comparison axes the orchestrator supports.
+
+features:
+  # Axis 1: different agents, same issue.
+  - id: add-separable-verbs
+    description: |
+      Add separable-verb practice to the German terminal app. Separable
+      verbs (aufstehen, ankommen, mitbringen) split in main clauses --
+      "ich stehe auf" -- and the drill should test that the learner puts
+      the prefix in the right place.
+    acceptance_criteria:
+      - A new practice mode covers at least 20 separable verbs.
+      - The drill accepts a correctly split answer and rejects an unsplit one.
+      - tests/test_german_practice.sh still passes.
+    agents:
+      - agent_id: claude
+        model: claude-haiku-4-5
+      - agent_id: codex
+        model: gpt-5.6-sol
+
+  # Axis 2: same agent twice, to see how much of the difference is just
+  # run-to-run variance. run_label is what makes two runs of one agent
+  # distinguishable -- without it they would collide on sandbox name.
+  - id: add-inseparable-verbs
+    description: |
+      Add inseparable-verb practice (verstehen, bekommen, erklären). These
+      never split, and their past participle takes no ge- prefix, which is
+      the thing learners get wrong.
+    acceptance_criteria:
+      - A new practice mode covers at least 15 inseparable verbs.
+      - Participles are checked without a ge- prefix.
+      - tests/test_german_practice.sh still passes.
+    agents:
+      - agent_id: claude
+        run_label: a
+      - agent_id: claude
+        run_label: b
+
+  - id: remove-words-from-inseparable-verbs
+    description: |
+      Let the learner remove a word from the inseparable-verb list so a
+      drill stops showing vocabulary they already know.
+    acceptance_criteria:
+      - Removal persists across restarts.
+      - Removing an absent word reports a clear error rather than crashing.
+    agents:
+      - agent_id: claude
+      - agent_id: codex

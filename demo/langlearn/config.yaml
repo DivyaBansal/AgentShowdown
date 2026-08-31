@@ -1,0 +1,50 @@
+# Demo preset: point agentshowdown at the langlearn repo next door.
+#
+# Unlike langlearn's own config/config.yaml (which is gitignored because it
+# holds machine-specific paths), this one is checked in so a fresh clone has
+# something to run. Override the repo location with AGENTSHOWDOWN_DEMO_REPO.
+
+repo_path: ../langlearn
+
+github:
+  repo: DivyaBansal/LangLearn
+  pat_secret_name: github
+  base_branch: main
+  # Off by default. A UI that can launch runs must not open pull requests on
+  # a real repository without being asked. The branch is still pushed to
+  # origin, so every diff stays inspectable.
+  open_pr: false
+
+agent:
+  sbx_agent: claude
+  dangerously_skip_permissions: true
+  model: claude-haiku-4-5
+
+run:
+  status_file: ".agent_status.json"
+
+  # Two tiers, because they cost different things. `sbx ls --json` is
+  # host-side and free, so liveness is checked often; reading the status
+  # file spawns a process inside the sandbox, so it runs less often.
+  liveness_interval_seconds: 3
+  poll_interval_seconds: 5
+
+  timeout_minutes: 60
+  max_concurrency: 3
+
+  # Runs on the host against the fetched branch, so nothing extra executes
+  # inside the container and the sandbox can be released sooner. Switch to
+  # "sandbox" for suites that need the sandbox's own toolchain.
+  verify_on: host
+  test_command: "bash tests/test_german_practice.sh"
+  lint_command: ""
+
+  # Costs one `sbx exec` per sandbox per tick and needs the sandbox kept
+  # alive, so it stays off unless you are actively debugging.
+  telemetry: false
+  telemetry_interval_seconds: 5
+
+  remove_sandbox_on_success: true
+  remove_sandbox_on_failure: true
+
+state_db_path: "./agentshowdown_state.sqlite3"

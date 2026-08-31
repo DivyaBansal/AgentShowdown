@@ -54,6 +54,12 @@ select = [
     "PL",            # pylint subset
 ]
 
+[tool.ruff.lint.flake8-type-checking]
+# FastAPI resolves Pydantic models at runtime to build request validators,
+# so TC001 must not push them into a type-checking block -- doing so breaks
+# the app at import time. This is ruff's supported way to say that.
+runtime-evaluated-base-classes = ["pydantic.BaseModel"]
+
 [tool.ruff.lint.per-file-ignores]
 # Tests: asserts are the point; strict annotations and typing-only-import
 # hygiene add noise without value; comparing against a literal count or

@@ -6,6 +6,8 @@ import datetime as dt
 import sqlite3
 from typing import TYPE_CHECKING
 
+from agentshowdown.orchestrator.events import bus
+
 if TYPE_CHECKING:
     from agentshowdown.orchestrator.telemetry import Sample
 
@@ -222,6 +224,61 @@ class StateStore:
                     now,
                 ),
             )
+
+        # Published after the transaction commits, so any subscriber that
+        # reads back sees the write that triggered it.
+        bus.publish(
+            "job_changed",
+            sandbox_name=sandbox_name,
+            status=merged["status"],
+            changed=sorted(fields),
+        )
+
+    def add_run(
+        self, run_id: str, *, feature_id: str, created_at: str, mode: str, status: str
+    ) -> None:
+        """Records a new run, which groups the jobs of one comparison."""
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO runs (run_id, feature_id, created_at, "
+                "finished_at, mode, status) VALUES (?, ?, ?, NULL, ?, ?)",
+                (run_id, feature_id, created_at, mode, status),
+            )
+
+    def finish_run(self, run_id: str, *, finished_at: str, status: str) -> None:
+        """Marks a run complete."""
+        with self.conn:
+            self.conn.execute(
+                "UPDATE runs SET finished_at = ?, status = ? WHERE run_id = ?",
+                (finished_at, status, run_id),
+            )
+
+    def get_run(self, run_id: str) -> dict | None:
+        """Fetches one run, or None if unknown."""
+        row = self.conn.execute(
+            "SELECT run_id, feature_id, created_at, finished_at, mode, status "
+            "FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        cols = ("run_id", "feature_id", "created_at", "finished_at", "mode", "status")
+        return dict(zip(cols, row, strict=True)) if row else None
+
+    def all_runs(self) -> list[dict]:
+        """Fetches every run, newest first."""
+        rows = self.conn.execute(
+            "SELECT run_id, feature_id, created_at, finished_at, mode, status "
+            "FROM runs ORDER BY created_at DESC"
+        ).fetchall()
+        cols = ("run_id", "feature_id", "created_at", "finished_at", "mode", "status")
+        return [dict(zip(cols, row, strict=True)) for row in rows]
+
+    def jobs_for_run(self, run_id: str) -> list[dict]:
+        """Fetches every job belonging to a run, oldest first."""
+        rows = self.conn.execute(
+            "SELECT * FROM jobs WHERE run_id = ? ORDER BY created_at", (run_id,)
+        ).fetchall()
+        cols = [d[0] for d in self.conn.execute("SELECT * FROM jobs LIMIT 0").description]
+        return [dict(zip(cols, row, strict=True)) for row in rows]
 
     def add_sample(self, sample: Sample) -> None:
         """Records one resource sample for a sandbox.
