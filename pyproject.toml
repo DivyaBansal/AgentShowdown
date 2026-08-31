@@ -55,7 +55,25 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "ANN"]  # allow asserts and skip strict annotations in tests
+# Tests: asserts are the point; strict annotations and typing-only-import
+# hygiene add noise without value; comparing against a literal count or
+# status code is clearer than naming a constant; and the "/tmp/..." strings
+# here are inert fixture values (a fake repo_path, a path inside a sandbox
+# container) that are never opened on the host.
+"tests/*" = ["S101", "ANN", "PLR2004", "TC003", "S108"]
+
+# The orchestrator modules ported from ../langlearn. These four rules flag
+# argument count and branch count on functions carried over verbatim:
+#   sbx.py     -- four functions taking 6-8 config/override arguments
+#   vcs.py     -- open_pr(repo, github_repo, branch, base, title, body)
+#   job.py     -- _finalize_success(...) and run_job's reattach state machine
+# Positional-argument count (PLR0917) was fixed properly by making the tails
+# keyword-only. What remains is total argument count and branch count, where
+# the honest options were a params-object refactor of faithfully-ported code
+# or this ignore. Scoped to these three files so new code stays strict.
+"src/agentshowdown/orchestrator/sbx.py" = ["PLR0913"]
+"src/agentshowdown/orchestrator/vcs.py" = ["PLR0913"]
+"src/agentshowdown/orchestrator/job.py" = ["PLR0913", "PLR0912"]
 
 # ---- ty: fast type checking (Astral), source of truth in CI ----
 # ty checks unannotated function bodies too (unlike mypy's default), so

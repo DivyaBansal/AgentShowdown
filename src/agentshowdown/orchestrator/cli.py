@@ -53,16 +53,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--features", default="config/features.yaml")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    run_p = sub.add_parser(
-        "run", help="Run feature(s) through their configured agent(s)."
-    )
+    run_p = sub.add_parser("run", help="Run feature(s) through their configured agent(s).")
     g = run_p.add_mutually_exclusive_group(required=True)
-    g.add_argument(
-        "--feature-id", action="append", help="Feature id to run (repeatable)."
-    )
-    g.add_argument(
-        "--all", action="store_true", help="Run every feature in the features file."
-    )
+    g.add_argument("--feature-id", action="append", help="Feature id to run (repeatable).")
+    g.add_argument("--all", action="store_true", help="Run every feature in the features file.")
     run_p.add_argument(
         "--max-concurrency",
         type=int,

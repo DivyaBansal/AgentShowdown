@@ -12,11 +12,12 @@ class CommandError(RuntimeError):
     pass
 
 
-def run(
-    cmd: list[str], check: bool = True, capture: bool = True
-) -> subprocess.CompletedProcess:
-    log(f"$ {' '.join(shlex.quote(c) for c in cmd)}")
-    result = subprocess.run(
+def run(cmd: list[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
+    log.info("subprocess_run", command=" ".join(shlex.quote(c) for c in cmd))
+    # The only subprocess call in the package. `cmd` is always an argv list
+    # built from literals plus validated config -- never a shell string, and
+    # shell=False, so there is no shell to inject into.
+    result = subprocess.run(  # noqa: S603
         cmd,
         capture_output=capture,
         text=True,

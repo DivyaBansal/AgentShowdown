@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from agentshowdown.orchestrator.config import Feature
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agentshowdown.orchestrator.config import Feature
 
 
 def build_prompt(feature: Feature, branch: str, status_file: str) -> str:
@@ -17,9 +20,7 @@ def build_prompt(feature: Feature, branch: str, status_file: str) -> str:
     Returns:
         The prompt string.
     """
-    criteria = (
-        "\n".join(f"- {c}" for c in feature.acceptance_criteria) or "(none specified)"
-    )
+    criteria = "\n".join(f"- {c}" for c in feature.acceptance_criteria) or "(none specified)"
     return f"""You are implementing a single feature in this repository.
 
 Feature: {feature.description}

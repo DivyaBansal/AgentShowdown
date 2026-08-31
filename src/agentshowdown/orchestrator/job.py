@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import shlex
-import sys
 import time
 import traceback
 
@@ -81,8 +80,7 @@ def expand_jobs(
         missing = [fid for fid in feature_ids if fid not in features]
         if missing:
             raise CommandError(
-                f"Unknown feature id(s): {', '.join(missing)}. "
-                f"Available: {', '.join(features)}"
+                f"Unknown feature id(s): {', '.join(missing)}. Available: {', '.join(features)}"
             )
         selected = [features[fid] for fid in feature_ids]
 
@@ -118,9 +116,7 @@ def expand_jobs(
     return jobs
 
 
-def find_spec_for_sandbox(
-    config: Config, feature: Feature, sandbox_name: str
-) -> AgentSpec:
+def find_spec_for_sandbox(config: Config, feature: Feature, sandbox_name: str) -> AgentSpec:
     """Reconstructs the AgentSpec a sandbox_name maps to.
 
     Used on resume, where the state DB only records agent_id (a plain
@@ -151,9 +147,7 @@ def find_spec_for_sandbox(
     )
 
 
-def poll_until_signal(
-    config: Config, store: StateStore, sandbox_name: str, deadline: float
-) -> str:
+def poll_until_signal(config: Config, store: StateStore, sandbox_name: str, deadline: float) -> str:
     """Polls a sandbox until its agent reports a terminal status, the
     container itself crashes, or the deadline passes.
 
@@ -173,9 +167,7 @@ def poll_until_signal(
             # fallback wrapper) managed to leave a status behind first.
             status = sbx_read_status(sandbox_name, config.status_file)
             if status and status.get("state") in TERMINAL_STATES:
-                store.upsert(
-                    sandbox_name, status=status["state"], detail=status.get("message")
-                )
+                store.upsert(sandbox_name, status=status["state"], detail=status.get("message"))
                 return status["state"]
             store.upsert(
                 sandbox_name,
@@ -194,9 +186,10 @@ def poll_until_signal(
             # "unknown"/malformed JSON -- keep polling rather than failing.
             store.upsert(sandbox_name, status="running", detail=message)
 
-        log(
-            f"  ...still running (sbx status: {container_status}), "
-            f"checking again in {config.poll_interval_seconds}s"
+        log.info(
+            "job_still_running",
+            container_status=container_status,
+            poll_interval_seconds=config.poll_interval_seconds,
         )
         time.sleep(config.poll_interval_seconds)
 
@@ -208,6 +201,7 @@ def _finalize_success(
     config: Config,
     store: StateStore,
     sandbox_name: str,
+    *,
     feature: Feature,
     agent_id: str,
     requested_branch: str,
@@ -223,24 +217,26 @@ def _finalize_success(
         requested_branch: The branch name the prompt asked for (the agent
             may have used a different one).
     """
-    actual_branch = (
-        sbx_current_branch(sandbox_name, config.repo_path) or requested_branch
-    )
+    actual_branch = sbx_current_branch(sandbox_name, config.repo_path) or requested_branch
     if actual_branch != requested_branch:
-        log(
-            f"NOTE: agent used branch '{actual_branch}' instead of requested "
-            f"'{requested_branch}'. Using the actual branch."
+        log.warning(
+            "agent_used_unexpected_branch",
+            actual_branch=actual_branch,
+            requested_branch=requested_branch,
         )
 
     if config.test_command:
-        log(f"Running tests inside sandbox: {config.test_command}")
+        log.info("sandbox_tests_started", command=config.test_command)
         test_result = sbx_exec_capture(
             sandbox_name, f"cd {shlex.quote(config.repo_path)} && {config.test_command}"
         )
         if test_result.returncode != 0:
-            log("Tests FAILED. Not opening a PR.")
-            log(test_result.stdout)
-            log(test_result.stderr)
+            log.error(
+                "sandbox_tests_failed",
+                command=config.test_command,
+                stdout=test_result.stdout[-2000:],
+                stderr=test_result.stderr[-2000:],
+            )
             store.upsert(
                 sandbox_name,
                 status="tests_failed",
@@ -252,12 +248,16 @@ def _finalize_success(
             return
 
     if config.lint_command:
-        log(f"Running lint inside sandbox: {config.lint_command}")
+        log.info("sandbox_lint_started", command=config.lint_command)
         lint_result = sbx_exec_capture(
             sandbox_name, f"cd {shlex.quote(config.repo_path)} && {config.lint_command}"
         )
         if lint_result.returncode != 0:
-            log("Lint FAILED. Not opening a PR.")
+            log.error(
+                "sandbox_lint_failed",
+                command=config.lint_command,
+                stdout=lint_result.stdout[-2000:],
+            )
             store.upsert(
                 sandbox_name,
                 status="lint_failed",
@@ -268,22 +268,20 @@ def _finalize_success(
                 sbx_rm(sandbox_name)
             return
 
-    log(f"Fetching branch '{actual_branch}' from sandbox and pushing to origin...")
+    log.info("branch_push_started", branch=actual_branch)
     fetch_and_push_branch(config.repo_path, sandbox_name, actual_branch)
 
     title = f"[{feature.id}] via {agent_id}"
-    body = (
-        f"Automated implementation of feature `{feature.id}`.\n\n{feature.description}"
-    )
+    body = f"Automated implementation of feature `{feature.id}`.\n\n{feature.description}"
     pr_url = open_pr(
         config.repo_path,
         config.github_repo,
         actual_branch,
         config.base_branch,
-        title,
-        body,
+        title=title,
+        body=body,
     )
-    log(f"\nOpened PR: {pr_url}\n")
+    log.info("pr_opened", pr_url=pr_url)
 
     store.upsert(sandbox_name, status="succeeded", branch=actual_branch, pr_url=pr_url)
 
@@ -316,31 +314,26 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
     if existing is not None:
         status = existing["status"]
         if status == "awaiting_input":
-            log(
-                f"'{sandbox_name}' is awaiting_input -- use "
-                f'`python -m agentshowdown.orchestrator answer {sandbox_name} "..."` to continue it. '
-                f"Skipping."
+            log.info(
+                "job_skipped_awaiting_input",
+                hint=(f'python -m agentshowdown.orchestrator answer {sandbox_name} "<answer>"'),
             )
             return
         if status == "succeeded":
-            log(
-                f"'{sandbox_name}' already succeeded (PR: {existing.get('pr_url')}). "
-                f"Give this agent a distinct run_label in features.yaml to rerun. Skipping."
+            log.info(
+                "job_skipped_already_succeeded",
+                pr_url=existing.get("pr_url"),
+                hint="give this agent a distinct run_label in features.yaml to rerun",
             )
             return
         if status in ("queued", "running") and sandbox_alive:
-            log(f"Reattaching to already-running sandbox '{sandbox_name}'...")
+            log.info("job_reattaching")
         elif sandbox_alive:
-            log(
-                f"'{sandbox_name}' previously ended as '{status}' -- removing and relaunching."
-            )
+            log.info("job_relaunching", previous_status=status)
             sbx_rm(sandbox_name)
             sandbox_alive = False
     elif sandbox_alive:
-        log(
-            f"Sandbox '{sandbox_name}' exists with no job record -- reattaching "
-            f"rather than risking a second agent process in it."
-        )
+        log.warning("orphan_sandbox_reattached")
 
     store.upsert(
         sandbox_name,
@@ -356,10 +349,7 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
         profile = config.agent_profiles.get(agent_id)
         resolved_model = resolve_model(spec, profile, config)
         prompt = build_prompt(feature, branch, config.status_file)
-        log(
-            f"\n=== Launching sandbox '{sandbox_name}' for feature '{feature.id}' "
-            f"(agent: {agent_id}) ===\n"
-        )
+        log.info("sandbox_launching", feature_id=feature.id, agent_id=agent_id)
         try:
             sbx_create_detached(
                 sandbox_name=sandbox_name,
@@ -372,9 +362,7 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
         except CommandError:
             # Likely a race with a concurrent `run` that created it first.
             if sbx_exists(sandbox_name):
-                log(
-                    f"'{sandbox_name}' already exists -- reattaching instead of relaunching."
-                )
+                log.info("sandbox_create_raced")
             else:
                 raise
         else:
@@ -395,7 +383,7 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
     deadline = time.monotonic() + config.timeout_minutes * 60
     final_status = poll_until_signal(config, store, sandbox_name, deadline)
 
-    log(f"\n=== Job '{sandbox_name}' finished with status: {final_status} ===\n")
+    log.info("job_finished", status=final_status)
 
     if final_status == "awaiting_input":
         # Sandbox must survive so `answer` can resume it.
@@ -405,10 +393,17 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
         if config.remove_sandbox_on_failure:
             sbx_rm(sandbox_name)
         else:
-            log(f"Sandbox left running for inspection: sbx exec {sandbox_name} bash")
+            log.info("sandbox_left_for_inspection", hint=f"sbx exec {sandbox_name} bash")
         return
 
-    _finalize_success(config, store, sandbox_name, feature, agent_id, branch)
+    _finalize_success(
+        config,
+        store,
+        sandbox_name,
+        feature=feature,
+        agent_id=agent_id,
+        requested_branch=branch,
+    )
 
 
 def resume_job(
@@ -427,11 +422,13 @@ def resume_job(
         CommandError: If the job is unknown, isn't awaiting_input, or its
             sandbox no longer exists.
     """
+    set_job_context(sandbox_name)
     store = StateStore(config.state_db_path)
     job = store.get(sandbox_name)
     if job is None:
         raise CommandError(
-            f"No known job '{sandbox_name}'. Run `python -m agentshowdown.orchestrator status` to list jobs."
+            f"No known job '{sandbox_name}'. Run "
+            f"`python -m agentshowdown.orchestrator status` to list jobs."
         )
     if job["status"] != "awaiting_input":
         raise CommandError(
@@ -451,23 +448,19 @@ def resume_job(
 
     feature = features.get(job["feature_id"])
     if feature is None:
-        raise CommandError(
-            f"Feature '{job['feature_id']}' not found in the loaded features file."
-        )
+        raise CommandError(f"Feature '{job['feature_id']}' not found in the loaded features file.")
     spec = find_spec_for_sandbox(config, feature, sandbox_name)
     profile = config.agent_profiles.get(spec.agent_id)
 
     prompt = build_resume_prompt(human_answer, config.status_file)
-    log(f"\n=== Resuming sandbox '{sandbox_name}' with human answer ===\n")
+    log.info("job_resuming")
     sbx_launch_agent(
         sandbox_name=sandbox_name,
         agent_id=spec.agent_id,
         prompt=prompt,
         config=config,
         model_override=resolve_model(spec, profile, config),
-        skip_permissions_override=resolve_dangerously_skip_permissions(
-            spec, profile, config
-        ),
+        skip_permissions_override=resolve_dangerously_skip_permissions(spec, profile, config),
         command_override=spec.command,
         resume=True,
     )
@@ -476,7 +469,7 @@ def resume_job(
     deadline = time.monotonic() + config.timeout_minutes * 60
     final_status = poll_until_signal(config, store, sandbox_name, deadline)
 
-    log(f"\n=== Job '{sandbox_name}' finished with status: {final_status} ===\n")
+    log.info("job_finished", status=final_status)
 
     if final_status == "awaiting_input":
         return
@@ -487,7 +480,12 @@ def resume_job(
         return
 
     _finalize_success(
-        config, store, sandbox_name, feature, job["agent_id"], job["branch"]
+        config,
+        store,
+        sandbox_name,
+        feature=feature,
+        agent_id=job["agent_id"],
+        requested_branch=job["branch"],
     )
 
 
@@ -506,21 +504,13 @@ def run_job_safe(config: Config, feature: Feature, spec: AgentSpec) -> None:
         run_job(config, feature, spec)
     except Exception:  # noqa: BLE001 -- must not let one job's failure kill the pool
         store = StateStore(config.state_db_path)
-        store.upsert(
-            sandbox_name, status="error", detail=traceback.format_exc()[-2000:]
-        )
-        log(
-            f"\n=== Job '{sandbox_name}' raised an unexpected error ===\n",
-            file=sys.stderr,
-        )
-        traceback.print_exc()
+        store.upsert(sandbox_name, status="error", detail=traceback.format_exc()[-2000:])
+        log.error("job_unexpected_error", exc_info=True)
     finally:
         set_job_context(None)
 
 
-def run_all(
-    config: Config, jobs: list[tuple[Feature, AgentSpec]], max_workers: int
-) -> None:
+def run_all(config: Config, jobs: list[tuple[Feature, AgentSpec]], max_workers: int) -> None:
     """Runs a list of jobs concurrently, bounded by max_workers.
 
     Args:
@@ -530,7 +520,5 @@ def run_all(
     """
     print(f"Running {len(jobs)} job(s) with max_concurrency={max_workers}...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [
-            pool.submit(run_job_safe, config, feature, spec) for feature, spec in jobs
-        ]
+        futures = [pool.submit(run_job_safe, config, feature, spec) for feature, spec in jobs]
         concurrent.futures.wait(futures)

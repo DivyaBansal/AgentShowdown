@@ -1,32 +1,32 @@
-"""Thread-scoped logging so concurrent jobs don't interleave unreadably.
+"""Job-scoped structured logging.
 
-`run_all` runs each job on its own worker thread; without a per-job prefix,
-stdout from N concurrently polling sandboxes interleaves into an
-unreadable stream. `set_job_context` tags the current thread with a
-sandbox name (thread-local, since a ThreadPoolExecutor worker only ever
-runs one job at a time) and `log` prefixes every line it prints with that
-tag when set.
+`run_all` runs each job on its own worker thread. Binding the sandbox name
+into structlog's contextvars tags every event a job emits, so concurrent
+jobs stay attributable without the per-line string prefix this module used
+to build. Contextvars are per-thread, so a ThreadPoolExecutor worker's
+binding never leaks into another job's events.
+
+Re-exports the app-wide `log` from `agentshowdown.logging` so orchestrator
+modules have one import site for both it and `set_job_context`.
 """
 
 from __future__ import annotations
 
-import sys
-import threading
-from typing import TextIO
+import structlog
 
-_local = threading.local()
+from agentshowdown.logging import log
+
+__all__ = ["log", "set_job_context"]
 
 
 def set_job_context(sandbox_name: str | None) -> None:
-    """Tags the current thread's log output with a sandbox name (or clears it)."""
-    _local.sandbox_name = sandbox_name
+    """Binds the sandbox name onto every event from this thread, or clears it.
 
-
-def log(message: str, file: TextIO = sys.stdout) -> None:
-    """Prints message, prefixing each line with the current thread's job tag."""
-    sandbox_name = getattr(_local, "sandbox_name", None)
+    Args:
+        sandbox_name: Sandbox to tag this thread's events with, or None to
+            clear the tag when the job finishes.
+    """
     if sandbox_name is None:
-        print(message, file=file)
-        return
-    tag = f"[{sandbox_name}]"
-    print("\n".join(f"{tag} {line}" for line in message.split("\n")), file=file)
+        structlog.contextvars.unbind_contextvars("sandbox_name")
+    else:
+        structlog.contextvars.bind_contextvars(sandbox_name=sandbox_name)

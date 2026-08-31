@@ -7,9 +7,7 @@ from agentshowdown.orchestrator.prompt import build_prompt, build_resume_prompt
 
 
 def test_build_prompt_includes_branch_and_status_file() -> None:
-    feature = Feature(
-        id="f1", description="Do the thing", acceptance_criteria=["works"], agents=[]
-    )
+    feature = Feature(id="f1", description="Do the thing", acceptance_criteria=["works"], agents=[])
 
     prompt = build_prompt(feature, "agent/f1/claude", ".agent_status.json")
 
@@ -23,9 +21,7 @@ def test_build_prompt_includes_branch_and_status_file() -> None:
 
 
 def test_build_prompt_no_acceptance_criteria_shows_placeholder() -> None:
-    feature = Feature(
-        id="f1", description="Do the thing", acceptance_criteria=[], agents=[]
-    )
+    feature = Feature(id="f1", description="Do the thing", acceptance_criteria=[], agents=[])
 
     prompt = build_prompt(feature, "agent/f1/claude", ".agent_status.json")
 

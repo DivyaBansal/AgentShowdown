@@ -72,10 +72,7 @@ def _failing_process() -> subprocess.CompletedProcess:
 
 
 def test_sandbox_name_for_without_run_label() -> None:
-    assert (
-        job_module.sandbox_name_for("f1", AgentSpec(agent_id="claude"))
-        == "arena-f1-claude"
-    )
+    assert job_module.sandbox_name_for("f1", AgentSpec(agent_id="claude")) == "arena-f1-claude"
 
 
 def test_sandbox_name_for_with_run_label() -> None:
@@ -92,9 +89,7 @@ def test_sandbox_name_for_truncates_to_60_chars() -> None:
 
 
 def test_branch_for_without_run_label() -> None:
-    assert (
-        job_module.branch_for("f1", AgentSpec(agent_id="claude")) == "agent/f1/claude"
-    )
+    assert job_module.branch_for("f1", AgentSpec(agent_id="claude")) == "agent/f1/claude"
 
 
 def test_branch_for_with_run_label() -> None:
@@ -185,9 +180,7 @@ def test_expand_jobs_unvalidated_agent_model_is_allowed(tmp_path: Path) -> None:
 
 def test_expand_jobs_command_override_skips_model_validation(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    spec = AgentSpec(
-        agent_id="claude", model="not-a-real-model", command="./run-my-agent.sh"
-    )
+    spec = AgentSpec(agent_id="claude", model="not-a-real-model", command="./run-my-agent.sh")
     features = {"f1": _feature(agents=[spec])}
     jobs = job_module.expand_jobs(config, features, None)
     assert jobs == [(features["f1"], spec)]
@@ -239,9 +232,7 @@ def test_poll_until_signal_returns_done_when_status_file_says_so(
 ) -> None:
     config = _config(tmp_path)
     store = StateStore(config.state_db_path)
-    store.upsert(
-        "box-1", feature_id="f1", agent_id="claude", branch="b", status="running"
-    )
+    store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="running")
     monkeypatch.setattr(job_module, "sbx_status", lambda name: "running")
     monkeypatch.setattr(
         job_module,
@@ -261,9 +252,7 @@ def test_poll_until_signal_returns_awaiting_input(
 ) -> None:
     config = _config(tmp_path)
     store = StateStore(config.state_db_path)
-    store.upsert(
-        "box-1", feature_id="f1", agent_id="claude", branch="b", status="running"
-    )
+    store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="running")
     monkeypatch.setattr(job_module, "sbx_status", lambda name: "running")
     monkeypatch.setattr(
         job_module,
@@ -282,9 +271,7 @@ def test_poll_until_signal_container_crash_with_no_status_returns_crashed(
 ) -> None:
     config = _config(tmp_path)
     store = StateStore(config.state_db_path)
-    store.upsert(
-        "box-1", feature_id="f1", agent_id="claude", branch="b", status="running"
-    )
+    store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="running")
     monkeypatch.setattr(job_module, "sbx_status", lambda name: "crashed")
     monkeypatch.setattr(job_module, "sbx_read_status", lambda name, path: None)
 
@@ -298,9 +285,7 @@ def test_poll_until_signal_container_crash_but_status_file_says_done(
 ) -> None:
     config = _config(tmp_path)
     store = StateStore(config.state_db_path)
-    store.upsert(
-        "box-1", feature_id="f1", agent_id="claude", branch="b", status="running"
-    )
+    store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="running")
     monkeypatch.setattr(job_module, "sbx_status", lambda name: "crashed")
     monkeypatch.setattr(
         job_module,
@@ -318,9 +303,7 @@ def test_poll_until_signal_times_out_when_deadline_already_passed(
 ) -> None:
     config = _config(tmp_path)
     store = StateStore(config.state_db_path)
-    store.upsert(
-        "box-1", feature_id="f1", agent_id="claude", branch="b", status="running"
-    )
+    store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="running")
 
     result = job_module.poll_until_signal(config, store, "box-1", time.monotonic() - 1)
 
@@ -333,9 +316,7 @@ def test_poll_until_signal_unknown_state_keeps_polling_until_done(
 ) -> None:
     config = _config(tmp_path)
     store = StateStore(config.state_db_path)
-    store.upsert(
-        "box-1", feature_id="f1", agent_id="claude", branch="b", status="running"
-    )
+    store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="running")
     responses = iter(
         [
             {"state": "unknown", "message": "bad json"},
@@ -343,9 +324,7 @@ def test_poll_until_signal_unknown_state_keeps_polling_until_done(
         ]
     )
     monkeypatch.setattr(job_module, "sbx_status", lambda name: "running")
-    monkeypatch.setattr(
-        job_module, "sbx_read_status", lambda name, path: next(responses)
-    )
+    monkeypatch.setattr(job_module, "sbx_read_status", lambda name, path: next(responses))
 
     result = job_module.poll_until_signal(config, store, "box-1", time.monotonic() + 10)
 
@@ -370,20 +349,23 @@ def test_finalize_success_opens_pr_when_tests_and_lint_pass(
     feature = _feature()
     calls: list[str] = []
 
-    monkeypatch.setattr(
-        job_module, "sbx_current_branch", lambda name, repo: "agent/f1/claude"
-    )
+    monkeypatch.setattr(job_module, "sbx_current_branch", lambda name, repo: "agent/f1/claude")
     monkeypatch.setattr(job_module, "sbx_exec_capture", lambda name, cmd: _ok_process())
     monkeypatch.setattr(
         job_module, "fetch_and_push_branch", lambda *a: calls.append("fetch_and_push")
     )
     monkeypatch.setattr(
-        job_module, "open_pr", lambda *a: "https://github.com/owner/repo/pull/1"
+        job_module, "open_pr", lambda *a, **kw: "https://github.com/owner/repo/pull/1"
     )
     monkeypatch.setattr(job_module, "sbx_rm", lambda name: calls.append("rm"))
 
     job_module._finalize_success(
-        config, store, "box-1", feature, "claude", "agent/f1/claude"
+        config,
+        store,
+        "box-1",
+        feature=feature,
+        agent_id="claude",
+        requested_branch="agent/f1/claude",
     )
 
     job = _job(store, "box-1")
@@ -408,31 +390,28 @@ def test_finalize_success_test_failure_skips_pr_and_respects_remove_on_failure(
     feature = _feature()
     calls: list[str] = []
 
-    monkeypatch.setattr(
-        job_module, "sbx_current_branch", lambda name, repo: "agent/f1/claude"
-    )
-    monkeypatch.setattr(
-        job_module, "sbx_exec_capture", lambda name, cmd: _failing_process()
-    )
+    monkeypatch.setattr(job_module, "sbx_current_branch", lambda name, repo: "agent/f1/claude")
+    monkeypatch.setattr(job_module, "sbx_exec_capture", lambda name, cmd: _failing_process())
     monkeypatch.setattr(job_module, "sbx_rm", lambda name: calls.append("rm"))
     monkeypatch.setattr(job_module, "open_pr", _refuse)
 
     job_module._finalize_success(
-        config, store, "box-1", feature, "claude", "agent/f1/claude"
+        config,
+        store,
+        "box-1",
+        feature=feature,
+        agent_id="claude",
+        requested_branch="agent/f1/claude",
     )
 
     assert _job(store, "box-1")["status"] == "tests_failed"
-    assert (
-        "rm" in calls
-    )  # opportunistic fix: remove_sandbox_on_failure now honored here too
+    assert "rm" in calls  # opportunistic fix: remove_sandbox_on_failure now honored here too
 
 
 # --- run_job -------------------------------------------------------------------
 
 
-def test_run_job_skips_when_awaiting_input(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_job_skips_when_awaiting_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = _config(tmp_path)
     store = StateStore(config.state_db_path)
     feature = _feature()
@@ -456,9 +435,7 @@ def test_run_job_skips_when_awaiting_input(
     assert _job(store, sandbox_name)["status"] == "awaiting_input"
 
 
-def test_run_job_skips_already_succeeded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_job_skips_already_succeeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = _config(tmp_path)
     store = StateStore(config.state_db_path)
     feature = _feature()
@@ -483,9 +460,7 @@ def test_run_job_skips_already_succeeded(
     assert _job(store, sandbox_name)["status"] == "succeeded"
 
 
-def test_run_job_full_success_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_job_full_success_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = _config(tmp_path)
     feature = _feature()
     spec = AgentSpec(agent_id="claude")
@@ -495,9 +470,7 @@ def test_run_job_full_success_path(
     monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: None)
     monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "done")
     finalize_calls = []
-    monkeypatch.setattr(
-        job_module, "_finalize_success", lambda *a: finalize_calls.append(a)
-    )
+    monkeypatch.setattr(job_module, "_finalize_success", lambda *a, **kw: finalize_calls.append(a))
 
     job_module.run_job(config, feature, spec)
 
@@ -548,12 +521,8 @@ def test_run_job_removes_and_relaunches_after_previous_crash(
     calls: list[str] = []
     monkeypatch.setattr(job_module, "sbx_exists", lambda name: True)
     monkeypatch.setattr(job_module, "sbx_rm", lambda name: calls.append("rm"))
-    monkeypatch.setattr(
-        job_module, "sbx_create_detached", lambda **kw: calls.append("create")
-    )
-    monkeypatch.setattr(
-        job_module, "sbx_launch_agent", lambda **kw: calls.append("launch")
-    )
+    monkeypatch.setattr(job_module, "sbx_create_detached", lambda **kw: calls.append("create"))
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: calls.append("launch"))
     monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "timed_out")
 
     job_module.run_job(config, feature, spec)
@@ -566,9 +535,7 @@ def test_run_job_resolves_model_and_kit_from_agent_profile(
 ) -> None:
     config = _config(
         tmp_path,
-        agent_profiles={
-            "claude": AgentProfile(model="profile-model", kit=["./kits/base"])
-        },
+        agent_profiles={"claude": AgentProfile(model="profile-model", kit=["./kits/base"])},
     )
     feature = _feature()
     spec = AgentSpec(agent_id="claude", kit=["./kits/job-specific"])
@@ -576,12 +543,8 @@ def test_run_job_resolves_model_and_kit_from_agent_profile(
     monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
     create_calls = []
     launch_calls = []
-    monkeypatch.setattr(
-        job_module, "sbx_create_detached", lambda **kw: create_calls.append(kw)
-    )
-    monkeypatch.setattr(
-        job_module, "sbx_launch_agent", lambda **kw: launch_calls.append(kw)
-    )
+    monkeypatch.setattr(job_module, "sbx_create_detached", lambda **kw: create_calls.append(kw))
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: launch_calls.append(kw))
     monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "timed_out")
 
     job_module.run_job(config, feature, spec)
@@ -594,18 +557,14 @@ def test_run_job_resolves_model_and_kit_from_agent_profile(
 def test_run_job_spec_model_overrides_agent_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config = _config(
-        tmp_path, agent_profiles={"claude": AgentProfile(model="profile-model")}
-    )
+    config = _config(tmp_path, agent_profiles={"claude": AgentProfile(model="profile-model")})
     feature = _feature()
     spec = AgentSpec(agent_id="claude", model="spec-model")
 
     monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
     monkeypatch.setattr(job_module, "sbx_create_detached", lambda **kw: None)
     launch_calls = []
-    monkeypatch.setattr(
-        job_module, "sbx_launch_agent", lambda **kw: launch_calls.append(kw)
-    )
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: launch_calls.append(kw))
     monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "timed_out")
 
     job_module.run_job(config, feature, spec)
@@ -629,12 +588,8 @@ def test_run_job_resolves_provider_and_skip_permissions_from_agent_profile(
     monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
     create_calls = []
     launch_calls = []
-    monkeypatch.setattr(
-        job_module, "sbx_create_detached", lambda **kw: create_calls.append(kw)
-    )
-    monkeypatch.setattr(
-        job_module, "sbx_launch_agent", lambda **kw: launch_calls.append(kw)
-    )
+    monkeypatch.setattr(job_module, "sbx_create_detached", lambda **kw: create_calls.append(kw))
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: launch_calls.append(kw))
     monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "timed_out")
 
     job_module.run_job(config, feature, spec)
@@ -655,9 +610,7 @@ def test_resume_job_unknown_sandbox_raises(tmp_path: Path) -> None:
 def test_resume_job_not_awaiting_input_raises(tmp_path: Path) -> None:
     config = _config(tmp_path)
     store = StateStore(config.state_db_path)
-    store.upsert(
-        "box-1", feature_id="f1", agent_id="claude", branch="b", status="running"
-    )
+    store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="running")
 
     with pytest.raises(CommandError, match="not 'awaiting_input'"):
         job_module.resume_job(config, {}, "box-1", "answer")
@@ -668,9 +621,7 @@ def test_resume_job_sandbox_gone_marks_lost_and_raises(
 ) -> None:
     config = _config(tmp_path)
     store = StateStore(config.state_db_path)
-    store.upsert(
-        "box-1", feature_id="f1", agent_id="claude", branch="b", status="awaiting_input"
-    )
+    store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="awaiting_input")
     monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
 
     with pytest.raises(CommandError, match="no longer exists"):
@@ -679,9 +630,7 @@ def test_resume_job_sandbox_gone_marks_lost_and_raises(
     assert _job(store, "box-1")["status"] == "lost"
 
 
-def test_resume_job_happy_path_finalizes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resume_job_happy_path_finalizes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = _config(tmp_path)
     store = StateStore(config.state_db_path)
     feature = _feature()
@@ -698,9 +647,7 @@ def test_resume_job_happy_path_finalizes(
     monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: None)
     monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "done")
     finalize_calls = []
-    monkeypatch.setattr(
-        job_module, "_finalize_success", lambda *a: finalize_calls.append(a)
-    )
+    monkeypatch.setattr(job_module, "_finalize_success", lambda *a, **kw: finalize_calls.append(a))
 
     job_module.resume_job(config, {"f1": feature}, sandbox_name, "use option B")
 
@@ -714,9 +661,7 @@ def test_resume_job_resolves_model_and_skip_permissions_from_agent_profile(
         tmp_path,
         dangerously_skip_permissions=False,
         agent_profiles={
-            "claude": AgentProfile(
-                model="profile-model", dangerously_skip_permissions=True
-            )
+            "claude": AgentProfile(model="profile-model", dangerously_skip_permissions=True)
         },
     )
     store = StateStore(config.state_db_path)
@@ -732,9 +677,7 @@ def test_resume_job_resolves_model_and_skip_permissions_from_agent_profile(
 
     monkeypatch.setattr(job_module, "sbx_exists", lambda name: True)
     launch_calls = []
-    monkeypatch.setattr(
-        job_module, "sbx_launch_agent", lambda **kw: launch_calls.append(kw)
-    )
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: launch_calls.append(kw))
     monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "awaiting_input")
 
     job_module.resume_job(config, {"f1": feature}, sandbox_name, "use option B")
@@ -763,9 +706,7 @@ def test_resume_job_awaiting_input_again_does_not_finalize(
     monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "awaiting_input")
     monkeypatch.setattr(job_module, "_finalize_success", _refuse)
 
-    job_module.resume_job(
-        config, {"f1": feature}, sandbox_name, "use option B"
-    )  # must not raise
+    job_module.resume_job(config, {"f1": feature}, sandbox_name, "use option B")  # must not raise
 
 
 # --- run_job_safe / run_all --------------------------------------------------
@@ -799,13 +740,9 @@ def test_run_job_safe_records_error_status_on_exception(
     assert "kaboom" in job["detail"]
 
 
-def test_run_all_respects_max_concurrency(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_all_respects_max_concurrency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = _config(tmp_path)
-    jobs = [
-        (_feature(), AgentSpec(agent_id="claude", run_label=str(i))) for i in range(6)
-    ]
+    jobs = [(_feature(), AgentSpec(agent_id="claude", run_label=str(i))) for i in range(6)]
     lock = threading.Lock()
     active = 0
     max_active = 0

@@ -38,9 +38,7 @@ def _config(**overrides) -> Config:
 
 
 def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess(
-        args=[], returncode=returncode, stdout=stdout, stderr=""
-    )
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
 
 
 def test_build_claude_cmd_default_flags() -> None:
@@ -128,9 +126,7 @@ def test_build_agent_cmd_known_agent_delegates_to_builder() -> None:
 
 
 def test_build_agent_cmd_model_override_wins_over_config_model() -> None:
-    cmd = sbx.build_agent_cmd(
-        "claude", "do the thing", _config(), model_override="haiku-override"
-    )
+    cmd = sbx.build_agent_cmd("claude", "do the thing", _config(), model_override="haiku-override")
     assert "haiku-override" in cmd
     assert "claude-haiku-4-5" not in cmd
 
@@ -148,9 +144,7 @@ def test_build_agent_invocation_known_agent_returns_shlex_joined_argv() -> None:
     )
 
 
-def test_build_agent_invocation_command_override_exports_env_and_runs_verbatim() -> (
-    None
-):
+def test_build_agent_invocation_command_override_exports_env_and_runs_verbatim() -> None:
     cmd_str = sbx.build_agent_invocation(
         "shell",
         "do the thing",
@@ -200,17 +194,13 @@ def test_sbx_status_parses_third_column(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(
         sbx,
         "run",
-        lambda *a, **k: _completed(
-            stdout="NAME    AGENT   STATUS\nbox-1   claude  running\n"
-        ),
+        lambda *a, **k: _completed(stdout="NAME    AGENT   STATUS\nbox-1   claude  running\n"),
     )
     assert sbx.sbx_status("box-1") == "running"
 
 
 def test_sbx_status_unknown_when_not_listed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        sbx, "run", lambda *a, **k: _completed(stdout="NAME    AGENT   STATUS\n")
-    )
+    monkeypatch.setattr(sbx, "run", lambda *a, **k: _completed(stdout="NAME    AGENT   STATUS\n"))
     assert sbx.sbx_status("box-1") == "unknown"
 
 
@@ -236,18 +226,14 @@ def test_sbx_read_status_valid_json(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_sbx_read_status_malformed_json_returns_unknown_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        sbx, "sbx_exec_capture", lambda *a, **k: _completed(stdout="not json")
-    )
+    monkeypatch.setattr(sbx, "sbx_exec_capture", lambda *a, **k: _completed(stdout="not json"))
     status = sbx.sbx_read_status("box-1", ".agent_status.json")
     assert status is not None
     assert status["state"] == "unknown"
 
 
 def test_sbx_current_branch_strips_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        sbx, "sbx_exec_capture", lambda *a, **k: _completed(stdout="main\n")
-    )
+    monkeypatch.setattr(sbx, "sbx_exec_capture", lambda *a, **k: _completed(stdout="main\n"))
     assert sbx.sbx_current_branch("box-1", "/repo") == "main"
 
 
@@ -336,9 +322,7 @@ def test_sbx_create_detached_passes_provider_and_model(
 ) -> None:
     calls = []
     monkeypatch.setattr(sbx, "run", lambda cmd, **k: calls.append(cmd))
-    sbx.sbx_create_detached(
-        "box-1", "claude", "/repo", provider="ollama", model="gemma3:e4b"
-    )
+    sbx.sbx_create_detached("box-1", "claude", "/repo", provider="ollama", model="gemma3:e4b")
     assert calls == [
         [
             "sbx",

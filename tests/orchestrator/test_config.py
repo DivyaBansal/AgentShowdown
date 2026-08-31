@@ -78,9 +78,7 @@ def test_config_load_max_concurrency_defaults_to_three(tmp_path: Path) -> None:
 def test_config_load_status_file_defaults_when_neither_key_present(
     tmp_path: Path,
 ) -> None:
-    run_block = textwrap.indent(
-        "poll_interval_seconds: 15\ntimeout_minutes: 60\n", "    "
-    )
+    run_block = textwrap.indent("poll_interval_seconds: 15\ntimeout_minutes: 60\n", "    ")
     path = _write(tmp_path, "config.yaml", BASE_CONFIG.format(run_block=run_block))
     config = Config.load(path)
     assert config.status_file == ".agent_status.json"
@@ -262,9 +260,7 @@ agents:
     )
     config = Config.load(path)
     assert config.agent_profiles == {
-        "claude": AgentProfile(
-            dangerously_skip_permissions=False, kit=["./kits/claude-extra"]
-        ),
+        "claude": AgentProfile(dangerously_skip_permissions=False, kit=["./kits/claude-extra"]),
         "opencode": AgentProfile(model="openrouter/anthropic/claude-sonnet-4"),
     }
 
@@ -376,10 +372,7 @@ def test_validate_model_skips_agent_with_no_known_models_entry() -> None:
 def test_resolve_provider_spec_wins_over_profile_and_config() -> None:
     spec = AgentSpec(agent_id="claude", provider="spec-provider")
     profile = AgentProfile(provider="profile-provider")
-    assert (
-        resolve_provider(spec, profile, _config(provider="config-provider"))
-        == "spec-provider"
-    )
+    assert resolve_provider(spec, profile, _config(provider="config-provider")) == "spec-provider"
 
 
 def test_resolve_provider_defaults_to_none_when_nothing_sets_it() -> None:
@@ -390,17 +383,13 @@ def test_resolve_provider_defaults_to_none_when_nothing_sets_it() -> None:
 def test_resolve_provider_profile_wins_over_config() -> None:
     spec = AgentSpec(agent_id="claude")
     profile = AgentProfile(provider="ollama")
-    assert (
-        resolve_provider(spec, profile, _config(provider="config-provider")) == "ollama"
-    )
+    assert resolve_provider(spec, profile, _config(provider="config-provider")) == "ollama"
 
 
 # --- resolve_dangerously_skip_permissions --------------------------------------
 
 
-def test_resolve_dangerously_skip_permissions_spec_overrides_profile_true_to_false() -> (
-    None
-):
+def test_resolve_dangerously_skip_permissions_spec_overrides_profile_true_to_false() -> None:
     spec = AgentSpec(agent_id="claude", dangerously_skip_permissions=False)
     profile = AgentProfile(dangerously_skip_permissions=True)
     result = resolve_dangerously_skip_permissions(
@@ -418,9 +407,7 @@ def test_resolve_dangerously_skip_permissions_profile_wins_over_config() -> None
     assert result is True
 
 
-def test_resolve_dangerously_skip_permissions_falls_back_to_config_when_profile_none() -> (
-    None
-):
+def test_resolve_dangerously_skip_permissions_falls_back_to_config_when_profile_none() -> None:
     spec = AgentSpec(agent_id="claude")
     result = resolve_dangerously_skip_permissions(
         spec, None, _config(dangerously_skip_permissions=True)

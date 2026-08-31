@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-import subprocess
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import subprocess
 
 from agentshowdown.orchestrator.process import run
 
@@ -28,7 +31,13 @@ def fetch_and_push_branch(repo_path: str, sandbox_name: str, branch: str) -> Non
 
 
 def open_pr(
-    repo_path: str, github_repo: str, branch: str, base: str, title: str, body: str
+    repo_path: str,
+    github_repo: str,
+    branch: str,
+    base: str,
+    *,
+    title: str,
+    body: str,
 ) -> str:
     """
     Requires the `gh` CLI to be authenticated (e.g. via GH_TOKEN env var set

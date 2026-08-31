@@ -175,9 +175,7 @@ class Config:
             test_command=raw["run"].get("test_command", "") or "",
             lint_command=raw["run"].get("lint_command", "") or "",
             remove_sandbox_on_success=raw["run"].get("remove_sandbox_on_success", True),
-            remove_sandbox_on_failure=raw["run"].get(
-                "remove_sandbox_on_failure", False
-            ),
+            remove_sandbox_on_failure=raw["run"].get("remove_sandbox_on_failure", False),
             state_db_path=raw.get("state_db_path", "./orchestrator_state.sqlite3"),
             agent_profiles=agent_profiles,
         )
@@ -250,9 +248,7 @@ def resolve_model(spec: AgentSpec, profile: AgentProfile | None, config: Config)
     return config.model
 
 
-def resolve_provider(
-    spec: AgentSpec, profile: AgentProfile | None, config: Config
-) -> str | None:
+def resolve_provider(spec: AgentSpec, profile: AgentProfile | None, config: Config) -> str | None:
     """Resolves the sbx --provider to create with: AgentSpec > AgentProfile > Config.
 
     Args:
@@ -347,9 +343,7 @@ class Feature:
                             run_label=entry.get("run_label"),
                             model=entry.get("model"),
                             command=entry.get("command"),
-                            dangerously_skip_permissions=entry.get(
-                                "dangerously_skip_permissions"
-                            ),
+                            dangerously_skip_permissions=entry.get("dangerously_skip_permissions"),
                             kit=list(entry.get("kit", []) or []),
                             provider=entry.get("provider"),
                         )

@@ -4,18 +4,28 @@ from __future__ import annotations
 
 import json
 import shlex
-import subprocess
+from typing import TYPE_CHECKING
 
-from agentshowdown.orchestrator.config import Config
 from agentshowdown.orchestrator.process import CommandError, run
 
-AGENT_LOG_PATH = "/tmp/sbx-agent-run.log"
+if TYPE_CHECKING:
+    import subprocess
+
+    from agentshowdown.orchestrator.config import Config
+
+# Path *inside* the sandbox container, not on the host -- S108 is about
+# host-side temp files, which this is not.
+AGENT_LOG_PATH = "/tmp/sbx-agent-run.log"  # noqa: S108
+
+# Zero-based index of the STATUS column in `sbx ls` tabular output.
+_LS_STATUS_COLUMN = 2
 
 
 def sbx_create_detached(
     sandbox_name: str,
     agent: str,
     workspace: str,
+    *,
     kit: list[str] | None = None,
     provider: str | None = None,
     model: str | None = None,
@@ -275,6 +285,7 @@ def build_agent_cmd(
     agent_id: str,
     prompt: str,
     config: Config,
+    *,
     model_override: str | None = None,
     skip_permissions_override: bool | None = None,
     resume: bool = False,
@@ -322,6 +333,7 @@ def build_agent_invocation(
     agent_id: str,
     prompt: str,
     config: Config,
+    *,
     model_override: str | None = None,
     skip_permissions_override: bool | None = None,
     command_override: str | None = None,
@@ -426,6 +438,7 @@ def sbx_launch_agent(
     agent_id: str,
     prompt: str,
     config: Config,
+    *,
     model_override: str | None = None,
     skip_permissions_override: bool | None = None,
     command_override: str | None = None,
@@ -482,8 +495,8 @@ def sbx_status(sandbox_name: str) -> str:
     for line in result.stdout.splitlines():
         if line.startswith(sandbox_name + " ") or line.split()[:1] == [sandbox_name]:
             parts = line.split()
-            if len(parts) >= 3:
-                return parts[2]
+            if len(parts) >= _LS_STATUS_COLUMN + 1:
+                return parts[_LS_STATUS_COLUMN]
     return "unknown"
 
 
@@ -505,9 +518,7 @@ def sbx_read_status(sandbox_name: str, status_file: str) -> dict | None:
         `state: "unknown"` if the file exists but isn't valid JSON --
         callers should treat that as "keep polling", not a hard failure.
     """
-    result = sbx_exec_capture(
-        sandbox_name, f"cat {shlex.quote(status_file)} 2>/dev/null"
-    )
+    result = sbx_exec_capture(sandbox_name, f"cat {shlex.quote(status_file)} 2>/dev/null")
     if result.returncode != 0 or not result.stdout.strip():
         return None
     try:
