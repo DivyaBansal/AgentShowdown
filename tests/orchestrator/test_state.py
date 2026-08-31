@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from agentshowdown.orchestrator.state import StateStore
+from agentshowdown.orchestrator.telemetry import Sample
 
 
 def test_upsert_then_get_round_trips(tmp_path: Path) -> None:
@@ -170,3 +171,64 @@ def test_metric_columns_round_trip(tmp_path: Path) -> None:
     assert job["lines_added"] == 40
     # Never reported -> stays NULL, so the UI can distinguish it from zero.
     assert job["num_turns"] is None
+
+
+def _sample(name: str, ts: str, **kw: object) -> Sample:
+    defaults = {
+        "cpu_cores": 1.0,
+        "mem_bytes": 1,
+        "mem_limit_bytes": 2,
+        "pids": 1,
+    }
+    return Sample(name, ts, **{**defaults, **kw})  # type: ignore[arg-type]
+
+
+def test_samples_round_trip_in_chronological_order(tmp_path: Path) -> None:
+    with StateStore(str(tmp_path / "s.sqlite3")) as store:
+        for i, ts in enumerate(["t1", "t2", "t3"]):
+            store.add_sample(_sample("box-1", ts, cpu_cores=float(i), mem_bytes=100 + i))
+        samples = store.get_samples("box-1")
+
+    assert [s["ts"] for s in samples] == ["t1", "t2", "t3"]
+    assert samples[2]["cpu_cores"] == 2.0
+
+
+def test_samples_are_scoped_per_sandbox(tmp_path: Path) -> None:
+    with StateStore(str(tmp_path / "s.sqlite3")) as store:
+        store.add_sample(_sample("box-1", "t1"))
+        store.add_sample(_sample("box-2", "t1", cpu_cores=9.0))
+
+        assert len(store.get_samples("box-1")) == 1
+        assert store.get_samples("box-2")[0]["cpu_cores"] == 9.0
+
+
+def test_unreported_sample_fields_stay_null(tmp_path: Path) -> None:
+    """A NULL must stay distinguishable from a real zero."""
+    with StateStore(str(tmp_path / "s.sqlite3")) as store:
+        store.add_sample(
+            _sample(
+                "box-1",
+                "t1",
+                cpu_cores=None,
+                mem_bytes=None,
+                mem_limit_bytes=None,
+                pids=None,
+            )
+        )
+        sample = store.get_samples("box-1")[0]
+
+    assert sample["cpu_cores"] is None
+    assert sample["mem_bytes"] is None
+
+
+def test_pruning_keeps_only_the_most_recent_samples(tmp_path: Path) -> None:
+    """An hour-long job at a 5s interval would otherwise grow unbounded."""
+    with StateStore(str(tmp_path / "s.sqlite3")) as store:
+        for i in range(20):
+            store.add_sample(_sample("box-1", f"t{i:03d}"))
+        deleted = store.prune_samples("box-1", keep=5)
+        remaining = store.get_samples("box-1")
+
+    assert deleted == 15
+    assert len(remaining) == 5
+    assert remaining[-1]["ts"] == "t019"  # newest survives

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import datetime as dt
 import sqlite3
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agentshowdown.orchestrator.telemetry import Sample
 
 # Columns `upsert` accepts as keyword arguments.
 _WRITABLE_COLUMNS: tuple[str, ...] = (
@@ -151,6 +155,21 @@ class StateStore:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS samples (
+                sandbox_name TEXT NOT NULL,
+                ts TEXT NOT NULL,
+                cpu_cores REAL,
+                mem_bytes INTEGER,
+                mem_limit_bytes INTEGER,
+                pids INTEGER
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_samples_sandbox ON samples (sandbox_name, ts)"
+        )
         self._migrate()
         self.conn.commit()
 
@@ -203,6 +222,69 @@ class StateStore:
                     now,
                 ),
             )
+
+    def add_sample(self, sample: Sample) -> None:
+        """Records one resource sample for a sandbox.
+
+        Args:
+            sample: The reading to persist. Any field may be None -- a
+                sandbox that can't report is not a failed job, and a NULL
+                must stay distinguishable from a real zero.
+        """
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO samples (sandbox_name, ts, cpu_cores, mem_bytes, "
+                "mem_limit_bytes, pids) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    sample.sandbox_name,
+                    sample.ts,
+                    sample.cpu_cores,
+                    sample.mem_bytes,
+                    sample.mem_limit_bytes,
+                    sample.pids,
+                ),
+            )
+
+    def get_samples(self, sandbox_name: str, limit: int = 720) -> list[dict]:
+        """Returns a sandbox's samples, oldest first.
+
+        Args:
+            sandbox_name: Sandbox to read.
+            limit: Most recent N samples to return. The default is an hour
+                at the 5s sampling interval.
+
+        Returns:
+            Sample rows in chronological order.
+        """
+        rows = self.conn.execute(
+            "SELECT sandbox_name, ts, cpu_cores, mem_bytes, mem_limit_bytes, pids "
+            "FROM samples WHERE sandbox_name = ? ORDER BY ts DESC LIMIT ?",
+            (sandbox_name, limit),
+        ).fetchall()
+        cols = ("sandbox_name", "ts", "cpu_cores", "mem_bytes", "mem_limit_bytes", "pids")
+        return [dict(zip(cols, row, strict=True)) for row in reversed(rows)]
+
+    def prune_samples(self, sandbox_name: str, keep: int = 720) -> int:
+        """Drops all but the most recent `keep` samples for a sandbox.
+
+        Sampling every few seconds for an hour-long job would otherwise grow
+        the database without bound.
+
+        Args:
+            sandbox_name: Sandbox to prune.
+            keep: How many recent samples to retain.
+
+        Returns:
+            The number of rows deleted.
+        """
+        with self.conn:
+            cursor = self.conn.execute(
+                "DELETE FROM samples WHERE sandbox_name = ? AND rowid NOT IN "
+                "(SELECT rowid FROM samples WHERE sandbox_name = ? "
+                "ORDER BY ts DESC LIMIT ?)",
+                (sandbox_name, sandbox_name, keep),
+            )
+            return cursor.rowcount
 
     def close(self) -> None:
         """Closes the underlying connection.
