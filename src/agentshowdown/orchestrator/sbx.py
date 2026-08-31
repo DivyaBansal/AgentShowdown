@@ -17,9 +17,6 @@ if TYPE_CHECKING:
 # host-side temp files, which this is not.
 AGENT_LOG_PATH = "/tmp/sbx-agent-run.log"  # noqa: S108
 
-# Zero-based index of the STATUS column in `sbx ls` tabular output.
-_LS_STATUS_COLUMN = 2
-
 
 def sbx_create_detached(
     sandbox_name: str,
@@ -72,7 +69,9 @@ def build_claude_cmd(
     dangerously_skip_permissions: bool,
     model: str,
     max_turns: int | None,
+    *,
     resume: bool = False,
+    capture_usage: bool = False,
 ) -> list[str]:
     """Builds the `claude` CLI invocation for a headless run or resume.
 
@@ -96,6 +95,11 @@ def build_claude_cmd(
     if model:
         cmd += ["--model", model]
     cmd.append("--print")
+    if capture_usage:
+        # Emits a final result object carrying usage.* and num_turns, which
+        # metrics.parse_usage reads back out of the run log. Verified against
+        # the claude CLI inside a real sandbox.
+        cmd += ["--output-format", "json"]
     if max_turns:
         cmd += ["--max-turns", str(max_turns)]
     if resume:
@@ -109,7 +113,9 @@ def build_codex_cmd(
     dangerously_skip_permissions: bool,
     model: str,
     max_turns: int | None,
+    *,
     resume: bool = False,
+    capture_usage: bool = False,
 ) -> list[str]:
     """Builds the `codex` CLI invocation for a headless run or resume.
 
@@ -131,6 +137,9 @@ def build_codex_cmd(
         The argv list to run inside the sandbox.
     """
     cmd = ["codex", "exec"]
+    if capture_usage:
+        # Prints events to stdout as JSONL, including token counts.
+        cmd.append("--json")
     if resume:
         cmd += ["resume", "--last"]
     if dangerously_skip_permissions:
@@ -146,7 +155,9 @@ def build_cursor_cmd(
     dangerously_skip_permissions: bool,
     model: str,
     max_turns: int | None,
+    *,
     resume: bool = False,
+    capture_usage: bool = False,
 ) -> list[str]:
     """Builds the `cursor-agent` CLI invocation for a headless run or resume.
 
@@ -181,7 +192,9 @@ def build_opencode_cmd(
     dangerously_skip_permissions: bool,
     model: str,
     max_turns: int | None,
+    *,
     resume: bool = False,
+    capture_usage: bool = False,
 ) -> list[str]:
     """Builds the `opencode` CLI invocation for a headless run or resume.
 
@@ -214,7 +227,9 @@ def build_copilot_cmd(
     dangerously_skip_permissions: bool,
     model: str,
     max_turns: int | None,
+    *,
     resume: bool = False,
+    capture_usage: bool = False,
 ) -> list[str]:
     """Builds the `copilot` CLI invocation for a headless run.
 
@@ -326,6 +341,7 @@ def build_agent_cmd(
         model_override if model_override is not None else config.model,
         config.max_turns,
         resume=resume,
+        capture_usage=config.capture_usage,
     )
 
 
@@ -482,27 +498,71 @@ def sbx_launch_agent(
     run(["sbx", "exec", "-d", sandbox_name, "bash", "-lc", detached_cmd], capture=False)
 
 
+def sbx_list() -> dict[str, dict]:
+    """Lists every sandbox, keyed by name.
+
+    This is the cheap tier of polling: `sbx ls` runs entirely on the host and
+    spawns no process inside any sandbox, so liveness can be checked often
+    without costing the agent anything. Reading the status file (see
+    `sbx_read_status`) is the expensive tier.
+
+    Returns:
+        A mapping of sandbox name to its `sbx ls --json` entry (keys include
+        `status`, `agent`, `id`, `workspaces`). Empty if sbx fails or emits
+        anything but the expected JSON shape -- callers read an absent name
+        as "not running", which is the safe reading either way.
+    """
+    result = run(["sbx", "ls", "--json"], check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        return {}
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {}
+    sandboxes = payload.get("sandboxes") if isinstance(payload, dict) else None
+    if not isinstance(sandboxes, list):
+        return {}
+    return {
+        entry["name"]: entry for entry in sandboxes if isinstance(entry, dict) and "name" in entry
+    }
+
+
 def sbx_exists(sandbox_name: str) -> bool:
     """Returns whether a sandbox with this name currently exists."""
-    result = run(["sbx", "ls", "--quiet"], check=False)
-    names = result.stdout.splitlines() if result.stdout else []
-    return sandbox_name in names
+    return sandbox_name in sbx_list()
 
 
 def sbx_status(sandbox_name: str) -> str:
-    """Returns sbx's reported status string (e.g. running, stopped, crashed)."""
-    result = run(["sbx", "ls"], check=False)
-    for line in result.stdout.splitlines():
-        if line.startswith(sandbox_name + " ") or line.split()[:1] == [sandbox_name]:
-            parts = line.split()
-            if len(parts) >= _LS_STATUS_COLUMN + 1:
-                return parts[_LS_STATUS_COLUMN]
-    return "unknown"
+    """Returns sbx's reported status string (e.g. running, stopped, crashed).
+
+    Reads the `status` field from `sbx ls --json` rather than splitting the
+    human-readable table on whitespace, which broke as soon as a column moved
+    or a value contained a space.
+    """
+    entry = sbx_list().get(sandbox_name)
+    if entry is None:
+        return "unknown"
+    status = entry.get("status")
+    return status if isinstance(status, str) else "unknown"
 
 
-def sbx_exec_capture(sandbox_name: str, shell_cmd: str) -> subprocess.CompletedProcess:
-    """Runs a shell command inside a sandbox and captures its output."""
-    return run(["sbx", "exec", sandbox_name, "bash", "-lc", shell_cmd], check=False)
+def sbx_exec_capture(
+    sandbox_name: str, shell_cmd: str, *, login_shell: bool = True
+) -> subprocess.CompletedProcess:
+    """Runs a shell command inside a sandbox and captures its output.
+
+    Args:
+        sandbox_name: Sandbox to run in.
+        shell_cmd: Command to run.
+        login_shell: Whether to use `bash -lc`. A login shell sources the
+            whole profile on every call, which the agent launch needs for
+            PATH but a polled `cat` does not -- pass False on hot paths.
+
+    Returns:
+        The completed process, with stdout and stderr captured.
+    """
+    flags = "-lc" if login_shell else "-c"
+    return run(["sbx", "exec", sandbox_name, "bash", flags, shell_cmd], check=False)
 
 
 def sbx_read_status(sandbox_name: str, status_file: str) -> dict | None:
@@ -518,7 +578,9 @@ def sbx_read_status(sandbox_name: str, status_file: str) -> dict | None:
         `state: "unknown"` if the file exists but isn't valid JSON --
         callers should treat that as "keep polling", not a hard failure.
     """
-    result = sbx_exec_capture(sandbox_name, f"cat {shlex.quote(status_file)} 2>/dev/null")
+    result = sbx_exec_capture(
+        sandbox_name, f"cat {shlex.quote(status_file)} 2>/dev/null", login_shell=False
+    )
     if result.returncode != 0 or not result.stdout.strip():
         return None
     try:

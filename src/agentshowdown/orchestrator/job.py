@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import concurrent.futures
+import datetime as dt
 import shlex
 import time
 import traceback
+from typing import TYPE_CHECKING
 
 from agentshowdown.orchestrator.config import (
     AgentSpec,
@@ -18,12 +20,13 @@ from agentshowdown.orchestrator.config import (
     validate_model,
 )
 from agentshowdown.orchestrator.log import log, set_job_context
+from agentshowdown.orchestrator.metrics import parse_diff_numstat, parse_usage
 from agentshowdown.orchestrator.process import CommandError
 from agentshowdown.orchestrator.prompt import build_prompt, build_resume_prompt
 from agentshowdown.orchestrator.sbx import (
     AGENT_CLI_BUILDERS,
+    AGENT_LOG_PATH,
     sbx_create_detached,
-    sbx_current_branch,
     sbx_exec_capture,
     sbx_exists,
     sbx_launch_agent,
@@ -32,9 +35,37 @@ from agentshowdown.orchestrator.sbx import (
     sbx_status,
 )
 from agentshowdown.orchestrator.state import StateStore
-from agentshowdown.orchestrator.vcs import fetch_and_push_branch, open_pr
+from agentshowdown.orchestrator.vcs import (
+    diff_numstat,
+    fetch_branch,
+    open_pr,
+    push_branch,
+    run_in_worktree,
+    sandbox_ref,
+)
+
+if TYPE_CHECKING:
+    import subprocess
 
 TERMINAL_STATES = ("done", "stuck", "awaiting_input", "crashed")
+
+# Container-level failure, as reported by `sbx ls` -- distinct from the
+# agent's own status file, which may still hold a usable terminal state.
+CONTAINER_FAILURE_STATES = ("crashed", "error", "failed")
+
+# How many consecutive "not in the listing" observations before a job is
+# declared lost. A sandbox can briefly not appear right after creation, so a
+# single miss is not proof it is gone.
+_MISSING_OBSERVATIONS_BEFORE_LOST = 3
+
+
+def _utc_now() -> str:
+    """Returns an ISO-8601 UTC timestamp for storage.
+
+    Durations are measured with time.monotonic(), which is immune to clock
+    changes; these timestamps are for display and ordering.
+    """
+    return dt.datetime.now(dt.UTC).isoformat()
 
 
 def sandbox_name_for(feature_id: str, spec: AgentSpec) -> str:
@@ -160,9 +191,16 @@ def poll_until_signal(config: Config, store: StateStore, sandbox_name: str, dead
     Returns:
         One of: "done", "stuck", "awaiting_input", "crashed", "timed_out".
     """
+    next_status_read = 0.0
+    consecutive_missing = 0
+
     while time.monotonic() < deadline:
+        # --- cheap tier -------------------------------------------------
+        # `sbx ls --json` runs on the host and spawns nothing inside the
+        # sandbox, so this can run often without costing the agent anything.
         container_status = sbx_status(sandbox_name)
-        if container_status in ("crashed", "error", "failed"):
+
+        if container_status in CONTAINER_FAILURE_STATES:
             # The container is gone/dying -- see if the agent (or the
             # fallback wrapper) managed to leave a status behind first.
             status = sbx_read_status(sandbox_name, config.status_file)
@@ -176,25 +214,95 @@ def poll_until_signal(config: Config, store: StateStore, sandbox_name: str, dead
             )
             return "crashed"
 
-        status = sbx_read_status(sandbox_name, config.status_file)
-        if status is not None:
-            state = status.get("state")
-            message = status.get("message")
-            if state in TERMINAL_STATES:
-                store.upsert(sandbox_name, status=state, detail=message)
-                return state
-            # "unknown"/malformed JSON -- keep polling rather than failing.
-            store.upsert(sandbox_name, status="running", detail=message)
+        if container_status == "unknown":
+            # Not listed at all -- removed out from under us (a stray
+            # `sbx rm`, a kill-all). Tolerate a few misses first, since a
+            # freshly created sandbox can briefly not appear in the listing.
+            consecutive_missing += 1
+            if consecutive_missing >= _MISSING_OBSERVATIONS_BEFORE_LOST:
+                store.upsert(
+                    sandbox_name,
+                    status="lost",
+                    detail="sandbox disappeared from `sbx ls` while the job was running",
+                )
+                return "lost"
+        else:
+            consecutive_missing = 0
 
-        log.info(
-            "job_still_running",
-            container_status=container_status,
-            poll_interval_seconds=config.poll_interval_seconds,
-        )
-        time.sleep(config.poll_interval_seconds)
+        # --- expensive tier ---------------------------------------------
+        # Reading the status file spawns a process inside the sandbox, so it
+        # runs on its own slower cadence rather than every liveness tick.
+        now = time.monotonic()
+        if now >= next_status_read:
+            next_status_read = now + config.poll_interval_seconds
+            status = sbx_read_status(sandbox_name, config.status_file)
+            if status is not None:
+                state = status.get("state")
+                message = status.get("message")
+                if state in TERMINAL_STATES:
+                    store.upsert(sandbox_name, status=state, detail=message)
+                    return state
+                # "unknown"/malformed JSON -- keep polling rather than failing.
+                store.upsert(sandbox_name, status="running", detail=message)
+            log.info(
+                "job_still_running",
+                container_status=container_status,
+                poll_interval_seconds=config.poll_interval_seconds,
+            )
+
+        time.sleep(config.liveness_interval_seconds)
 
     store.upsert(sandbox_name, status="timed_out")
     return "timed_out"
+
+
+def _extract_before_teardown(
+    config: Config, sandbox_name: str, requested_branch: str
+) -> tuple[str, str]:
+    """Pulls everything needed from the sandbox in a single exec.
+
+    Once this returns, nothing else needs the sandbox alive, so it can be
+    torn down immediately. Bundling the branch name and the run log into one
+    `sbx exec` keeps teardown at one process inside the container rather
+    than one per value.
+
+    Args:
+        config: Orchestrator config.
+        sandbox_name: Sandbox to read from.
+        requested_branch: Fallback if the branch can't be read.
+
+    Returns:
+        (actual_branch, run_log).
+    """
+    marker = "---agentshowdown-log---"
+    result = sbx_exec_capture(
+        sandbox_name,
+        f"cd {shlex.quote(config.repo_path)} && git rev-parse --abbrev-ref HEAD; "
+        f"echo {marker}; cat {shlex.quote(AGENT_LOG_PATH)} 2>/dev/null",
+        login_shell=False,
+    )
+    head, _, log_text = result.stdout.partition(marker)
+    branch = head.strip().splitlines()[-1].strip() if head.strip() else ""
+    return branch or requested_branch, log_text.lstrip("\n")
+
+
+def _verify(
+    config: Config, sandbox_name: str, ref: str, command: str
+) -> subprocess.CompletedProcess:
+    """Runs a test or lint command, on the host or in the sandbox.
+
+    Args:
+        config: Orchestrator config (`verify_on` picks the location).
+        sandbox_name: Sandbox to run in, when verifying there.
+        ref: Fetched ref to check out, when verifying on the host.
+        command: The command to run.
+
+    Returns:
+        The completed process.
+    """
+    if config.verify_on == "host":
+        return run_in_worktree(config.repo_path, ref, command)
+    return sbx_exec_capture(sandbox_name, f"cd {shlex.quote(config.repo_path)} && {command}")
 
 
 def _finalize_success(
@@ -206,7 +314,12 @@ def _finalize_success(
     agent_id: str,
     requested_branch: str,
 ) -> None:
-    """Runs test/lint, pushes the branch, and opens a PR for a done job.
+    """Verifies the work, publishes the branch, and records metrics.
+
+    Ordering is deliberate: everything the sandbox is needed for happens in
+    one exec up front, then the branch is fetched to the host, and from that
+    point on verification, diff measurement and publishing all run host-side
+    so the sandbox can be released as early as possible.
 
     Args:
         config: Orchestrator config.
@@ -217,7 +330,7 @@ def _finalize_success(
         requested_branch: The branch name the prompt asked for (the agent
             may have used a different one).
     """
-    actual_branch = sbx_current_branch(sandbox_name, config.repo_path) or requested_branch
+    actual_branch, run_log = _extract_before_teardown(config, sandbox_name, requested_branch)
     if actual_branch != requested_branch:
         log.warning(
             "agent_used_unexpected_branch",
@@ -225,65 +338,77 @@ def _finalize_success(
             requested_branch=requested_branch,
         )
 
-    if config.test_command:
-        log.info("sandbox_tests_started", command=config.test_command)
-        test_result = sbx_exec_capture(
-            sandbox_name, f"cd {shlex.quote(config.repo_path)} && {config.test_command}"
-        )
-        if test_result.returncode != 0:
-            log.error(
-                "sandbox_tests_failed",
-                command=config.test_command,
-                stdout=test_result.stdout[-2000:],
-                stderr=test_result.stderr[-2000:],
-            )
-            store.upsert(
-                sandbox_name,
-                status="tests_failed",
-                branch=actual_branch,
-                detail=test_result.stdout[-2000:],
-            )
-            if config.remove_sandbox_on_failure:
-                sbx_rm(sandbox_name)
-            return
+    usage = parse_usage(run_log, agent_id)
+    metrics: dict[str, object] = {
+        "branch": actual_branch,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "num_turns": usage.num_turns,
+    }
 
-    if config.lint_command:
-        log.info("sandbox_lint_started", command=config.lint_command)
-        lint_result = sbx_exec_capture(
-            sandbox_name, f"cd {shlex.quote(config.repo_path)} && {config.lint_command}"
-        )
-        if lint_result.returncode != 0:
+    # Fetch (not push) so the work can be verified on the host before any of
+    # it reaches origin.
+    fetch_branch(config.repo_path, sandbox_name)
+    ref = sandbox_ref(sandbox_name, actual_branch)
+
+    files_changed, lines_added, lines_removed = parse_diff_numstat(
+        diff_numstat(config.repo_path, config.base_branch, ref)
+    )
+    metrics |= {
+        "files_changed": files_changed,
+        "lines_added": lines_added,
+        "lines_removed": lines_removed,
+    }
+
+    for command, label, failed_status in (
+        (config.test_command, "tests", "tests_failed"),
+        (config.lint_command, "lint", "lint_failed"),
+    ):
+        if not command:
+            continue
+        log.info(f"{label}_started", command=command, verify_on=config.verify_on)
+        result = _verify(config, sandbox_name, ref, command)
+        passed = result.returncode == 0
+        metrics[f"{label}_passed"] = int(passed)
+        if not passed:
             log.error(
-                "sandbox_lint_failed",
-                command=config.lint_command,
-                stdout=lint_result.stdout[-2000:],
+                f"{label}_failed",
+                command=command,
+                stdout=result.stdout[-2000:],
+                stderr=result.stderr[-2000:],
             )
             store.upsert(
                 sandbox_name,
-                status="lint_failed",
-                branch=actual_branch,
-                detail=lint_result.stdout[-2000:],
+                status=failed_status,
+                detail=result.stdout[-2000:],
+                **metrics,
             )
             if config.remove_sandbox_on_failure:
                 sbx_rm(sandbox_name)
             return
 
     log.info("branch_push_started", branch=actual_branch)
-    fetch_and_push_branch(config.repo_path, sandbox_name, actual_branch)
+    push_branch(config.repo_path, sandbox_name, actual_branch)
 
-    title = f"[{feature.id}] via {agent_id}"
-    body = f"Automated implementation of feature `{feature.id}`.\n\n{feature.description}"
-    pr_url = open_pr(
-        config.repo_path,
-        config.github_repo,
-        actual_branch,
-        config.base_branch,
-        title=title,
-        body=body,
-    )
-    log.info("pr_opened", pr_url=pr_url)
+    pr_url = None
+    if config.open_pr:
+        title = f"[{feature.id}] via {agent_id}"
+        body = f"Automated implementation of feature `{feature.id}`.\n\n{feature.description}"
+        pr_url = open_pr(
+            config.repo_path,
+            config.github_repo,
+            actual_branch,
+            config.base_branch,
+            title=title,
+            body=body,
+        )
+        log.info("pr_opened", pr_url=pr_url)
+    else:
+        # The branch is on origin either way; only the PR is gated, because
+        # opening one is an outward-facing side effect on a real repo.
+        log.info("pr_skipped", branch=actual_branch, reason="open_pr disabled")
 
-    store.upsert(sandbox_name, status="succeeded", branch=actual_branch, pr_url=pr_url)
+    store.upsert(sandbox_name, status="succeeded", pr_url=pr_url, **metrics)
 
     if config.remove_sandbox_on_success:
         sbx_rm(sandbox_name)
@@ -335,6 +460,8 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
     elif sandbox_alive:
         log.warning("orphan_sandbox_reattached")
 
+    profile = config.agent_profiles.get(agent_id)
+    resolved_model = resolve_model(spec, profile, config)
     store.upsert(
         sandbox_name,
         feature_id=feature.id,
@@ -343,11 +470,11 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
         status="queued" if not sandbox_alive else "running",
         pr_url=None,
         detail=None,
+        model=resolved_model,
+        run_label=spec.run_label,
     )
 
     if not sandbox_alive:
-        profile = config.agent_profiles.get(agent_id)
-        resolved_model = resolve_model(spec, profile, config)
         prompt = build_prompt(feature, branch, config.status_file)
         log.info("sandbox_launching", feature_id=feature.id, agent_id=agent_id)
         try:
@@ -378,11 +505,17 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
                 command_override=spec.command,
             )
 
-    store.upsert(sandbox_name, status="running")
+    started_monotonic = time.monotonic()
+    store.upsert(sandbox_name, status="running", started_at=_utc_now(), finished_at=None)
 
-    deadline = time.monotonic() + config.timeout_minutes * 60
+    deadline = started_monotonic + config.timeout_minutes * 60
     final_status = poll_until_signal(config, store, sandbox_name, deadline)
 
+    store.upsert(
+        sandbox_name,
+        finished_at=_utc_now(),
+        duration_seconds=round(time.monotonic() - started_monotonic, 3),
+    )
     log.info("job_finished", status=final_status)
 
     if final_status == "awaiting_input":
@@ -464,11 +597,17 @@ def resume_job(
         command_override=spec.command,
         resume=True,
     )
-    store.upsert(sandbox_name, status="running", detail=None)
+    started_monotonic = time.monotonic()
+    store.upsert(sandbox_name, status="running", detail=None, started_at=_utc_now())
 
-    deadline = time.monotonic() + config.timeout_minutes * 60
+    deadline = started_monotonic + config.timeout_minutes * 60
     final_status = poll_until_signal(config, store, sandbox_name, deadline)
 
+    store.upsert(
+        sandbox_name,
+        finished_at=_utc_now(),
+        duration_seconds=round(time.monotonic() - started_monotonic, 3),
+    )
     log.info("job_finished", status=final_status)
 
     if final_status == "awaiting_input":
@@ -503,8 +642,8 @@ def run_job_safe(config: Config, feature: Feature, spec: AgentSpec) -> None:
     try:
         run_job(config, feature, spec)
     except Exception:  # noqa: BLE001 -- must not let one job's failure kill the pool
-        store = StateStore(config.state_db_path)
-        store.upsert(sandbox_name, status="error", detail=traceback.format_exc()[-2000:])
+        with StateStore(config.state_db_path) as store:
+            store.upsert(sandbox_name, status="error", detail=traceback.format_exc()[-2000:])
         log.error("job_unexpected_error", exc_info=True)
     finally:
         set_job_context(None)

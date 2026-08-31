@@ -27,6 +27,7 @@ def _config(tmp_path: Path, **overrides) -> Config:
         "max_turns": None,
         "status_file": ".agent_status.json",
         "poll_interval_seconds": 0,
+        "liveness_interval_seconds": 0,
         "timeout_minutes": 60,
         "max_concurrency": 3,
         "test_command": "",
@@ -334,31 +335,40 @@ def test_poll_until_signal_unknown_state_keeps_polling_until_done(
 # --- _finalize_success --------------------------------------------------------
 
 
-def test_finalize_success_opens_pr_when_tests_and_lint_pass(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config = _config(tmp_path, test_command="pytest", lint_command="ruff check .")
-    store = StateStore(config.state_db_path)
-    store.upsert(
-        "box-1",
-        feature_id="f1",
-        agent_id="claude",
-        branch="agent/f1/claude",
-        status="done",
-    )
-    feature = _feature()
-    calls: list[str] = []
+def _ok_process(stdout: str = "") -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
 
-    monkeypatch.setattr(job_module, "sbx_current_branch", lambda name, repo: "agent/f1/claude")
-    monkeypatch.setattr(job_module, "sbx_exec_capture", lambda name, cmd: _ok_process())
+
+def _stub_finalize_host_calls(
+    monkeypatch: pytest.MonkeyPatch, calls: list[str], *, verify_ok: bool = True
+) -> None:
+    """Stubs everything _finalize_success touches outside the sandbox."""
+    monkeypatch.setattr(job_module, "fetch_branch", lambda *a: calls.append("fetch"))
+    monkeypatch.setattr(job_module, "push_branch", lambda *a: calls.append("push"))
+    monkeypatch.setattr(job_module, "diff_numstat", lambda *a: "3\t1\ta.py\n")
     monkeypatch.setattr(
-        job_module, "fetch_and_push_branch", lambda *a: calls.append("fetch_and_push")
-    )
-    monkeypatch.setattr(
-        job_module, "open_pr", lambda *a, **kw: "https://github.com/owner/repo/pull/1"
+        job_module,
+        "run_in_worktree",
+        lambda *a: (
+            calls.append("verify_host") or (_ok_process() if verify_ok else _failing_process())
+        ),
     )
     monkeypatch.setattr(job_module, "sbx_rm", lambda name: calls.append("rm"))
 
+
+def _stub_teardown_read(monkeypatch: pytest.MonkeyPatch, calls: list[str], log: str = ""):
+    """Stubs the single sandbox read, recording that it happened."""
+
+    def fake_exec(name, cmd, **kw):
+        calls.append("sbx_exec")
+        if "rev-parse" in cmd:
+            return _ok_process(f"agent/f1/claude\n---agentshowdown-log---\n{log}")
+        return _ok_process()
+
+    monkeypatch.setattr(job_module, "sbx_exec_capture", fake_exec)
+
+
+def _finalize(config, store, feature) -> None:
     job_module._finalize_success(
         config,
         store,
@@ -367,45 +377,121 @@ def test_finalize_success_opens_pr_when_tests_and_lint_pass(
         agent_id="claude",
         requested_branch="agent/f1/claude",
     )
+
+
+def _seed_done(store) -> None:
+    store.upsert(
+        "box-1",
+        feature_id="f1",
+        agent_id="claude",
+        branch="agent/f1/claude",
+        status="done",
+    )
+
+
+def test_finalize_success_pushes_branch_and_records_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path, test_command="pytest", open_pr=True)
+    store = StateStore(config.state_db_path)
+    _seed_done(store)
+    calls: list[str] = []
+    claude_log = '{"type":"result","num_turns":7,"usage":{"input_tokens":1234,"output_tokens":567}}'
+    _stub_teardown_read(monkeypatch, calls, log=claude_log)
+    _stub_finalize_host_calls(monkeypatch, calls)
+    monkeypatch.setattr(
+        job_module, "open_pr", lambda *a, **kw: "https://github.com/owner/repo/pull/1"
+    )
+
+    _finalize(config, store, _feature())
 
     job = _job(store, "box-1")
     assert job["status"] == "succeeded"
     assert job["pr_url"] == "https://github.com/owner/repo/pull/1"
-    assert "fetch_and_push" in calls
-    assert "rm" in calls  # remove_sandbox_on_success defaults True
+    assert "push" in calls
+    assert "rm" in calls
+    # Metrics measured on the host, plus tokens parsed from the run log.
+    assert job["files_changed"] == 1
+    assert job["lines_added"] == 3
+    assert job["input_tokens"] == 1234
+    assert job["num_turns"] == 7
+    assert job["tests_passed"] == 1
 
 
-def test_finalize_success_test_failure_skips_pr_and_respects_remove_on_failure(
+def test_finalize_success_skips_the_pr_when_open_pr_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """open_pr defaults off: the branch still reaches origin, the PR does not."""
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    _seed_done(store)
+    calls: list[str] = []
+    _stub_teardown_read(monkeypatch, calls)
+    _stub_finalize_host_calls(monkeypatch, calls)
+    monkeypatch.setattr(job_module, "open_pr", _refuse)
+
+    _finalize(config, store, _feature())
+
+    job = _job(store, "box-1")
+    assert job["status"] == "succeeded"
+    assert job["pr_url"] is None
+    assert "push" in calls
+
+
+def test_finalize_success_verifies_on_the_host_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """verify_on=host must not run the test command inside the sandbox."""
+    config = _config(tmp_path, test_command="pytest", lint_command="ruff check")
+    store = StateStore(config.state_db_path)
+    _seed_done(store)
+    calls: list[str] = []
+    _stub_teardown_read(monkeypatch, calls)
+    _stub_finalize_host_calls(monkeypatch, calls)
+
+    _finalize(config, store, _feature())
+
+    assert calls.count("verify_host") == 2  # tests + lint, both host-side
+    # Exactly one sandbox exec: the bundled teardown read.
+    assert calls.count("sbx_exec") == 1
+
+
+def test_finalize_success_verify_on_sandbox_uses_the_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path, test_command="pytest", verify_on="sandbox")
+    store = StateStore(config.state_db_path)
+    _seed_done(store)
+    calls: list[str] = []
+    _stub_teardown_read(monkeypatch, calls)
+    _stub_finalize_host_calls(monkeypatch, calls)
+
+    _finalize(config, store, _feature())
+
+    assert "verify_host" not in calls
+    # Teardown read plus the in-sandbox test run.
+    assert calls.count("sbx_exec") == 2
+    assert _job(store, "box-1")["status"] == "succeeded"
+
+
+def test_finalize_success_test_failure_skips_push_and_removes_sandbox(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = _config(tmp_path, test_command="pytest", remove_sandbox_on_failure=True)
     store = StateStore(config.state_db_path)
-    store.upsert(
-        "box-1",
-        feature_id="f1",
-        agent_id="claude",
-        branch="agent/f1/claude",
-        status="done",
-    )
-    feature = _feature()
+    _seed_done(store)
     calls: list[str] = []
-
-    monkeypatch.setattr(job_module, "sbx_current_branch", lambda name, repo: "agent/f1/claude")
-    monkeypatch.setattr(job_module, "sbx_exec_capture", lambda name, cmd: _failing_process())
-    monkeypatch.setattr(job_module, "sbx_rm", lambda name: calls.append("rm"))
+    _stub_teardown_read(monkeypatch, calls)
+    _stub_finalize_host_calls(monkeypatch, calls, verify_ok=False)
     monkeypatch.setattr(job_module, "open_pr", _refuse)
 
-    job_module._finalize_success(
-        config,
-        store,
-        "box-1",
-        feature=feature,
-        agent_id="claude",
-        requested_branch="agent/f1/claude",
-    )
+    _finalize(config, store, _feature())
 
-    assert _job(store, "box-1")["status"] == "tests_failed"
-    assert "rm" in calls  # opportunistic fix: remove_sandbox_on_failure now honored here too
+    job = _job(store, "box-1")
+    assert job["status"] == "tests_failed"
+    assert job["tests_passed"] == 0
+    assert "push" not in calls  # nothing reaches origin when tests fail
+    assert "rm" in calls
 
 
 # --- run_job -------------------------------------------------------------------

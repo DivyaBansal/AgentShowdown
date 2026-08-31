@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
@@ -137,11 +138,37 @@ def test_build_agent_cmd_unknown_agent_raises() -> None:
 
 
 def test_build_agent_invocation_known_agent_returns_shlex_joined_argv() -> None:
-    cmd_str = sbx.build_agent_invocation("claude", "do the thing", _config())
+    cmd_str = sbx.build_agent_invocation("claude", "do the thing", _config(capture_usage=False))
     assert (
         cmd_str
         == "claude --dangerously-skip-permissions --model claude-haiku-4-5 --print 'do the thing'"
     )
+
+
+def test_capture_usage_adds_the_claude_json_output_flag() -> None:
+    cmd = sbx.build_agent_cmd("claude", "hi", _config(capture_usage=True))
+    assert "--output-format" in cmd
+    assert cmd[cmd.index("--output-format") + 1] == "json"
+
+
+def test_capture_usage_adds_the_codex_json_flag() -> None:
+    cmd = sbx.build_agent_cmd("codex", "hi", _config(capture_usage=True))
+    assert "--json" in cmd
+
+
+def test_capture_usage_off_leaves_the_agent_output_human_readable() -> None:
+    assert "--output-format" not in sbx.build_agent_cmd(
+        "claude", "hi", _config(capture_usage=False)
+    )
+    assert "--json" not in sbx.build_agent_cmd("codex", "hi", _config(capture_usage=False))
+
+
+def test_capture_usage_is_accepted_and_ignored_by_agents_without_usage() -> None:
+    """The flag is passed blind; CLIs with no usage output must not break."""
+    for agent in ("cursor", "opencode", "copilot"):
+        cmd = sbx.build_agent_cmd(agent, "hi", _config(capture_usage=True))
+        assert "--json" not in cmd
+        assert "--output-format" not in cmd
 
 
 def test_build_agent_invocation_command_override_exports_env_and_runs_verbatim() -> None:
@@ -184,24 +211,89 @@ def test_build_agent_shell_command_redirects_only_final_line() -> None:
     assert lines[1] == "my-command --flag > /tmp/sbx-agent-run.log 2>&1"
 
 
+_LS_JSON = json.dumps(
+    {
+        "sandboxes": [
+            {
+                "name": "box-1",
+                "id": "96f315ef-5da2-46eb-b001-b86801bc2b73",
+                "agent": "claude",
+                "status": "running",
+                "ports": [],
+                "workspaces": ["/home/u/repo"],
+            },
+            {"name": "box-2", "id": "b2", "agent": "codex", "status": "stopped"},
+        ]
+    }
+)
+
+
+def test_sbx_list_uses_the_host_side_json_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return _completed(stdout=_LS_JSON)
+
+    monkeypatch.setattr(sbx, "run", fake_run)
+
+    listing = sbx.sbx_list()
+
+    # `sbx ls` is host-side; it must never shell into a sandbox.
+    assert calls == [["sbx", "ls", "--json"]]
+    assert set(listing) == {"box-1", "box-2"}
+    assert listing["box-1"]["status"] == "running"
+
+
 def test_sbx_exists_true_when_name_in_listing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sbx, "run", lambda *a, **k: _completed(stdout="box-1\nbox-2\n"))
+    monkeypatch.setattr(sbx, "run", lambda *a, **k: _completed(stdout=_LS_JSON))
     assert sbx.sbx_exists("box-1") is True
     assert sbx.sbx_exists("box-3") is False
 
 
-def test_sbx_status_parses_third_column(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        sbx,
-        "run",
-        lambda *a, **k: _completed(stdout="NAME    AGENT   STATUS\nbox-1   claude  running\n"),
-    )
+def test_sbx_status_reads_the_status_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sbx, "run", lambda *a, **k: _completed(stdout=_LS_JSON))
     assert sbx.sbx_status("box-1") == "running"
+    assert sbx.sbx_status("box-2") == "stopped"
 
 
 def test_sbx_status_unknown_when_not_listed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sbx, "run", lambda *a, **k: _completed(stdout="NAME    AGENT   STATUS\n"))
-    assert sbx.sbx_status("box-1") == "unknown"
+    monkeypatch.setattr(sbx, "run", lambda *a, **k: _completed(stdout=_LS_JSON))
+    assert sbx.sbx_status("box-3") == "unknown"
+
+
+def test_sbx_list_empty_when_sbx_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sbx, "run", lambda *a, **k: _completed(stdout="", returncode=1))
+    assert sbx.sbx_list() == {}
+    assert sbx.sbx_exists("box-1") is False
+
+
+def test_sbx_list_empty_on_malformed_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sbx, "run", lambda *a, **k: _completed(stdout="not json"))
+    assert sbx.sbx_list() == {}
+
+
+def test_sbx_list_empty_when_payload_shape_is_unexpected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sbx, "run", lambda *a, **k: _completed(stdout='{"sandboxes": "nope"}'))
+    assert sbx.sbx_list() == {}
+
+
+def test_status_read_skips_the_login_shell(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The polled status read must not source the profile on every tick."""
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return _completed(stdout='{"state": "done"}')
+
+    monkeypatch.setattr(sbx, "run", fake_run)
+    sbx.sbx_read_status("box-1", ".agent_status.json")
+
+    assert calls[0][:5] == ["sbx", "exec", "box-1", "bash", "-c"]
 
 
 def test_sbx_read_status_missing_file_returns_none(

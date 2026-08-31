@@ -80,6 +80,28 @@ def validate_model(agent_id: str, model: str) -> None:
     )
 
 
+VERIFY_ON_CHOICES = ("host", "sandbox")
+
+
+def _validated_verify_on(value: str) -> str:
+    """Returns `value` if it names a supported verification location.
+
+    Args:
+        value: The raw `run.verify_on` setting.
+
+    Returns:
+        The validated value.
+
+    Raises:
+        CommandError: If it isn't one of VERIFY_ON_CHOICES.
+    """
+    if value not in VERIFY_ON_CHOICES:
+        raise CommandError(
+            f"Unknown verify_on '{value}'. Choose one of: {', '.join(VERIFY_ON_CHOICES)}"
+        )
+    return value
+
+
 @dataclass
 class AgentProfile:
     """Per-agent-id defaults, from config.yaml's `agents:` section.
@@ -130,6 +152,27 @@ class Config:
     provider: str | None = None
     agent_profiles: dict[str, AgentProfile] = field(default_factory=dict)
 
+    # --- sandbox cost controls -------------------------------------------
+    # Two tiers of polling, because they cost very different things:
+    # `sbx ls --json` is a host-side query that spawns nothing inside the
+    # sandbox, while reading the status file costs a process per tick. The
+    # cheap tier runs often; the expensive one is what users can turn down.
+    liveness_interval_seconds: int = 3
+    # Sampling resource usage costs one `sbx exec` per sandbox per tick and
+    # needs the sandbox alive, so it is off unless explicitly asked for.
+    telemetry: bool = False
+    telemetry_interval_seconds: int = 5
+    # "host" runs test/lint on the fetched branch (nothing extra executes in
+    # the container); "sandbox" keeps the original in-sandbox behavior for
+    # suites that need the sandbox's toolchain.
+    verify_on: str = "host"
+    # Adds the agent CLI's JSON output flag so token usage can be parsed
+    # back out of the run log.
+    capture_usage: bool = True
+    # Opening a PR is an outward-facing side effect on a real repo, so a UI
+    # that can trigger runs must opt into it. The branch is still pushed.
+    open_pr: bool = False
+
     @staticmethod
     def load(path: str) -> Config:
         """Loads a Config from a YAML file.
@@ -175,7 +218,16 @@ class Config:
             test_command=raw["run"].get("test_command", "") or "",
             lint_command=raw["run"].get("lint_command", "") or "",
             remove_sandbox_on_success=raw["run"].get("remove_sandbox_on_success", True),
-            remove_sandbox_on_failure=raw["run"].get("remove_sandbox_on_failure", False),
+            # Defaults to True (langlearn used False): a sandbox kept after a
+            # failed job only helps if someone inspects it, and the default
+            # path here tears down promptly.
+            remove_sandbox_on_failure=raw["run"].get("remove_sandbox_on_failure", True),
+            liveness_interval_seconds=raw["run"].get("liveness_interval_seconds", 3),
+            telemetry=raw["run"].get("telemetry", False),
+            telemetry_interval_seconds=raw["run"].get("telemetry_interval_seconds", 5),
+            verify_on=_validated_verify_on(raw["run"].get("verify_on", "host")),
+            capture_usage=raw["run"].get("capture_usage", True),
+            open_pr=raw["github"].get("open_pr", False),
             state_db_path=raw.get("state_db_path", "./orchestrator_state.sqlite3"),
             agent_profiles=agent_profiles,
         )
