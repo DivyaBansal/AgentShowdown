@@ -1,12 +1,12 @@
-"""Tests for agentshowdown.orchestrator.telemetry."""
+"""Tests for backend.orchestrator.telemetry."""
 
 from __future__ import annotations
 
 import subprocess
 from typing import TYPE_CHECKING
 
-from agentshowdown.orchestrator import telemetry as tel
-from agentshowdown.orchestrator.telemetry import (
+from backend.orchestrator import telemetry as tel
+from backend.orchestrator.telemetry import (
     TelemetrySampler,
     compute_cpu_cores,
     parse_cgroup_probe,

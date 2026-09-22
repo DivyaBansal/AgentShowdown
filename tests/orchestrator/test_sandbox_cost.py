@@ -21,12 +21,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
-from agentshowdown.orchestrator import job as job_module
-from agentshowdown.orchestrator import sbx as sbx_module
-from agentshowdown.orchestrator import vcs as vcs_module
-from agentshowdown.orchestrator.config import AgentSpec, Config, Feature
-from agentshowdown.orchestrator.state import StateStore
+from backend.orchestrator import job as job_module
+from backend.orchestrator import sbx as sbx_module
+from backend.orchestrator import vcs as vcs_module
+from backend.orchestrator.config import AgentSpec, Config, Feature
+from backend.orchestrator.state import StateStore
 
 LS_JSON = json.dumps(
     {"sandboxes": [{"name": "arena-f1-claude", "agent": "claude", "status": "running"}]}

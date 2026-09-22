@@ -7,8 +7,7 @@ import sqlite3
 from typing import TYPE_CHECKING
 
 import pytest
-
-from agentshowdown.orchestrator.state import StateStore
+from backend.orchestrator.state import StateStore
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

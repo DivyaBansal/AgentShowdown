@@ -1,10 +1,12 @@
-"""Tests for agentshowdown.orchestrator.cli."""
+"""Tests for backend.orchestrator.cli."""
 
 from __future__ import annotations
 
 import pytest
-
-from agentshowdown.orchestrator.cli import build_arg_parser, print_status_table
+from backend.orchestrator.cli import (
+    build_arg_parser,
+    print_status_table,
+)
 
 
 def test_print_status_table_empty(capsys: pytest.CaptureFixture[str]) -> None:

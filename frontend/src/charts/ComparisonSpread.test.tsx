@@ -28,6 +28,7 @@ function job(overrides: Partial<Job> = {}): Job {
     input_tokens: 500,
     output_tokens: 100,
     num_turns: 3,
+    repo: null,
     ...overrides,
   };
 }

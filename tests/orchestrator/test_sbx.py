@@ -1,4 +1,4 @@
-"""Tests for agentshowdown.orchestrator.sbx."""
+"""Tests for backend.orchestrator.sbx."""
 
 from __future__ import annotations
 
@@ -6,10 +6,9 @@ import json
 import subprocess
 
 import pytest
-
-from agentshowdown.orchestrator import sbx
-from agentshowdown.orchestrator.config import Config
-from agentshowdown.orchestrator.process import CommandError
+from backend.orchestrator import sbx
+from backend.orchestrator.config import Config
+from backend.orchestrator.process import CommandError, CommandTimeout
 
 
 def _config(**overrides) -> Config:
@@ -324,11 +323,6 @@ def test_sbx_read_status_malformed_json_returns_unknown_state(
     assert status["state"] == "unknown"
 
 
-def test_sbx_current_branch_strips_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sbx, "sbx_exec_capture", lambda *a, **k: _completed(stdout="main\n"))
-    assert sbx.sbx_current_branch("box-1", "/repo") == "main"
-
-
 # --- build_copilot_cmd ---------------------------------------------------------
 
 
@@ -430,3 +424,93 @@ def test_sbx_create_detached_passes_provider_and_model(
             "/repo",
         ]
     ]
+
+
+def test_sbx_create_detached_emits_sorted_env_flags_before_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: calls.append(cmd))
+    sbx.sbx_create_detached(
+        "box-1",
+        "claude",
+        "/repo",
+        env={
+            "ANTHROPIC_BASE_URL": "http://host.docker.internal:11434",
+            "ANTHROPIC_AUTH_TOKEN": "ollama",
+        },
+    )
+    assert calls == [
+        [
+            "sbx",
+            "create",
+            "--clone",
+            "claude",
+            "--name",
+            "box-1",
+            "-e",
+            "ANTHROPIC_AUTH_TOKEN=ollama",
+            "-e",
+            "ANTHROPIC_BASE_URL=http://host.docker.internal:11434",
+            "/repo",
+        ]
+    ]
+
+
+def test_sbx_create_detached_empty_env_adds_no_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: calls.append(cmd))
+    sbx.sbx_create_detached("box-1", "claude", "/repo", env={})
+    assert calls == [["sbx", "create", "--clone", "claude", "--name", "box-1", "/repo"]]
+
+
+def test_exec_capture_emits_workdir_flag_only_when_set(monkeypatch) -> None:
+    """`-w` targets a container path; omitting it keeps the sandbox default."""
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(sbx, "run", fake_run)
+
+    sbx.sbx_exec_capture("box-1", "echo hi")
+    sbx.sbx_exec_capture("box-1", "echo hi", workdir="/work/repo")
+
+    assert "-w" not in seen[0]
+    assert seen[1][:4] == ["sbx", "exec", "-w", "/work/repo"]
+
+
+def test_sbx_list_bounds_how_long_the_listing_may_take(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`sbx ls` runs from HTTP handlers, so it must not be able to hang one."""
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.update(kwargs)
+        return _completed(stdout=_LS_JSON)
+
+    monkeypatch.setattr(sbx, "run", fake_run)
+
+    sbx.sbx_list()
+
+    assert seen["options"].timeout > 0
+
+
+def test_sbx_list_empty_when_the_command_hangs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wedged `sbx` reads as "no sandboxes", not as an exception.
+
+    Regression test: this used to propagate out of the poll loop and the
+    /sandboxes handler, because sbx_list passed no timeout at all.
+    """
+
+    def fake_run(*_args, **_kwargs):
+        raise CommandTimeout("sbx ls hung")
+
+    monkeypatch.setattr(sbx, "run", fake_run)
+
+    assert sbx.sbx_list() == {}
+    assert sbx.sbx_exists("box-1") is False

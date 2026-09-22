@@ -1,10 +1,10 @@
-"""Tests for agentshowdown.orchestrator.metrics."""
+"""Tests for backend.orchestrator.metrics."""
 
 from __future__ import annotations
 
 import json
 
-from agentshowdown.orchestrator.metrics import (
+from backend.orchestrator.metrics import (
     Usage,
     parse_diff_numstat,
     parse_usage,

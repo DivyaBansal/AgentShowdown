@@ -1,0 +1,300 @@
+/* Form controls, buttons, chips and inline notices. */
+
+input,
+select,
+textarea {
+  font: inherit;
+  font-size: var(--text-md);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  min-height: 36px;
+  width: 100%;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+textarea {
+  resize: vertical;
+  line-height: 1.45;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-3);
+  opacity: 1;
+}
+
+input:hover:not(:disabled),
+select:hover:not(:disabled),
+textarea:hover:not(:disabled) {
+  border-color: var(--text-3);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-wash);
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled {
+  background: var(--surface-2);
+  color: var(--text-3);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  flex: none;
+  accent-color: var(--accent);
+}
+
+/* --- buttons ----------------------------------------------------------- */
+
+button {
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 32px;
+  padding: 5px 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--accent-ink);
+  border-color: var(--accent-ink);
+  color: var(--on-accent);
+}
+
+.btn--danger {
+  color: var(--danger-ink);
+  border-color: var(--danger);
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: var(--danger-wash);
+}
+
+.btn--quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-2);
+}
+
+.btn--quiet:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* --- fields ------------------------------------------------------------ */
+
+form.controls {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-width: 0;
+}
+
+.field__label {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-4);
+}
+
+fieldset.group {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+fieldset.group > legend {
+  padding: 0;
+  margin-bottom: var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* A group with a visible frame, for nested records (one agent on a feature). */
+fieldset.group--framed {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  background: var(--surface-2);
+}
+
+fieldset.group--framed > legend {
+  padding: 0 var(--space-2);
+  margin-bottom: 0;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-5);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.repeat-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.kv-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+details.disclosure > summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-2);
+  padding: var(--space-1) 0;
+  width: fit-content;
+}
+
+details.disclosure[open] > summary {
+  margin-bottom: var(--space-3);
+}
+
+details.disclosure > .disclosure__body {
+  display: grid;
+  gap: var(--space-4);
+}
+
+progress {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--accent);
+}
+
+/* --- chips ------------------------------------------------------------- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  color: var(--text-2);
+  background: var(--surface-3);
+}
+
+.chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
+}
+
+.chip--ok { color: var(--ok-ink); background: var(--ok-wash); }
+.chip--warn { color: var(--warn-ink); background: var(--warn-wash); }
+.chip--danger { color: var(--danger-ink); background: var(--danger-wash); }
+.chip--active { color: var(--accent-ink); background: var(--accent-wash); }
+
+/* --- notices ----------------------------------------------------------- */
+
+.notice {
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  border-left: var(--rail) solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.notice--ok { border-left-color: var(--ok); background: var(--ok-wash); }
+.notice--warn { border-left-color: var(--warn); background: var(--warn-wash); }
+.notice--danger { border-left-color: var(--danger); background: var(--danger-wash); }
+
+.notice ul {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-5);
+}
+
+/* Aligns a row of controls to their bottom edge, so a button lines up with
+   an input that has a label above it. */
+.field-grid--bottom {
+  align-items: end;
+}
+
+/* Checkboxes sitting in a field grid next to labelled inputs. */
+.checks--field {
+  align-self: end;
+  min-height: 36px;
+  align-items: center;
+}

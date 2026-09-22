@@ -6,6 +6,7 @@
  */
 
 import type { Preflight } from "../api";
+import { Notice } from "./ui/Notice";
 
 export function PreflightBanner({ preflight }: { preflight: Preflight | null }) {
   if (preflight === null) {
@@ -16,14 +17,14 @@ export function PreflightBanner({ preflight }: { preflight: Preflight | null }) 
 
   if (preflight.live_runs_possible && failing.length === 0) {
     return (
-      <div className="card" role="status">
+      <Notice tone="ok">
         <strong>Environment ready.</strong> Live runs can launch sandboxes.
-      </div>
+      </Notice>
     );
   }
 
   return (
-    <div className="card" role="alert">
+    <Notice tone={preflight.live_runs_possible ? "warn" : "danger"}>
       <strong>
         {preflight.live_runs_possible
           ? "Environment mostly ready."
@@ -32,16 +33,16 @@ export function PreflightBanner({ preflight }: { preflight: Preflight | null }) 
       <ul>
         {failing.map((check) => (
           <li key={check.name}>
-            <code>{check.name}</code> — {check.detail}
+            <code>{check.name}</code>: {check.detail}
           </li>
         ))}
       </ul>
       {!preflight.live_runs_possible && (
         <p className="hint">
-          You can still browse recorded runs. Starting a new one needs the
-          checks above to pass.
+          You can still browse recorded runs. Starting a new one needs the checks
+          above to pass.
         </p>
       )}
-    </div>
+    </Notice>
   );
 }

@@ -1,0 +1,323 @@
+/* App shell: header bar, tabs, page width and generic surfaces. */
+
+.app {
+  min-height: 100vh;
+}
+
+.app-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.app-header__inner,
+.app-main {
+  max-width: var(--content-width);
+  margin: 0 auto;
+  padding-left: var(--space-5);
+  padding-right: var(--space-5);
+}
+
+/* Three tracks rather than a flex row, so the tabs sit in the true centre
+   of the header and stay there however wide the brand or the status text
+   happens to be. */
+.app-header__inner {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: 56px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: start;
+}
+
+.brand h1 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.app-header__inner > [role="tablist"] {
+  justify-self: center;
+}
+
+.app-header__actions {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* Crossed gladii (components/BrandMark.tsx). */
+.brand__mark {
+  display: block;
+  flex: none;
+}
+
+.connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--text-3);
+}
+
+.connection::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.connection--live::before {
+  background: var(--ok);
+}
+
+/* Segmented tabs. */
+[role="tablist"] {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface-3);
+  border-radius: calc(var(--radius) + 2px);
+}
+
+[role="tab"] {
+  min-height: 28px;
+  padding: 3px 14px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+[role="tab"]:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+[role="tab"][aria-selected="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+/* Theme switch (components/ThemeSwitch.tsx): icon buttons in a segmented
+   track, matching the tabs. */
+.theme-switch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface-3);
+  border-radius: calc(var(--radius) + 2px);
+}
+
+.theme-switch button {
+  min-height: 0;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-3);
+}
+
+.theme-switch button:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.theme-switch button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.theme-switch svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.app-main {
+  padding-top: var(--space-5);
+  padding-bottom: 64px;
+  display: grid;
+  gap: var(--space-4);
+}
+
+/* The page intro on each view: title on the left, context on the right. */
+.view-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.view-head h2 {
+  font-size: var(--text-xl);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.view-head p {
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
+.stack {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.stack--tight {
+  gap: var(--space-2);
+}
+
+/* A plain bordered surface. Panel builds on the same look. */
+.surface {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.surface__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.surface__head h2,
+.surface__head h3 {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.surface__body {
+  padding: var(--space-4);
+  display: grid;
+  gap: var(--space-4);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+
+.list > li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.list > li:last-child {
+  border-bottom: 0;
+}
+
+.list__main {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.facts dt {
+  color: var(--text-3);
+}
+
+.facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.scroll-x {
+  overflow-x: auto;
+}
+
+/* --- modal ------------------------------------------------------------- */
+
+/* A hand-rolled overlay rather than <dialog>: jsdom has no showModal(), so a
+   real dialog would behave differently in tests than in the browser. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+  z-index: 20;
+}
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  box-shadow: var(--shadow-overlay);
+  padding: var(--space-5);
+  width: min(520px, 100%);
+  max-height: 85vh;
+  overflow: auto;
+  display: grid;
+  gap: var(--space-4);
+}
+
+.modal h2 {
+  font-size: var(--text-lg);
+}
+
+/* Too narrow for three tracks: the tabs drop to their own centred row
+   rather than squeezing the brand and the status text. */
+@media (max-width: 720px) {
+  .app-header__inner {
+    grid-template-columns: 1fr auto;
+    row-gap: var(--space-2);
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+
+  .app-header__inner > [role="tablist"] {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-header__inner,
+  .app-main {
+    padding-left: var(--space-3);
+    padding-right: var(--space-3);
+  }
+}

@@ -2,7 +2,6 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   ApiError,
   answerJob,
-  createOrder,
   fetchAgents,
   fetchFeatures,
   fetchPreflight,
@@ -56,7 +55,7 @@ describe("request handling", () => {
         json: async () => ({ detail: "Unknown feature id: nope" }),
       }),
     );
-    await expect(startRun({ feature_id: "nope", agents: [] })).rejects.toThrow(
+    await expect(startRun({ entries: [{ feature_id: "nope", agents: [] }] })).rejects.toThrow(
       /Unknown feature id/,
     );
   });
@@ -93,6 +92,31 @@ describe("request handling", () => {
     });
   });
 
+  it("gives up and reports a timeout when the server never responds", async () => {
+    vi.useFakeTimers();
+    // A realistic stand-in for fetch: it never settles on its own, but
+    // (like the real thing) rejects once its AbortSignal fires.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        });
+      }),
+    );
+
+    const pending = expect(fetchPreflight()).rejects.toMatchObject({
+      name: "ApiError",
+      status: 0,
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await pending;
+
+    vi.useRealTimers();
+  });
+
   it("escapes identifiers that would otherwise break the path", async () => {
     const fetchMock = ok({ samples: [] });
     vi.stubGlobal("fetch", fetchMock);
@@ -117,14 +141,6 @@ describe("endpoints unwrap their envelope", () => {
 });
 
 describe("mutations", () => {
-  it("posts an order", async () => {
-    vi.stubGlobal("fetch", ok({ status: "accepted", item_id: "sku-1" }));
-    await expect(createOrder({ item_id: "sku-1", quantity: 2 })).resolves.toEqual({
-      status: "accepted",
-      item_id: "sku-1",
-    });
-  });
-
   it("pings a sandbox", async () => {
     vi.stubGlobal("fetch", ok({ sandbox_name: "box-1", reachable: true }));
     await expect(pingSandbox("box-1")).resolves.toMatchObject({ reachable: true });

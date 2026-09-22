@@ -1,4 +1,4 @@
-"""Tests for agentshowdown.orchestrator.config."""
+"""Tests for backend.orchestrator.config."""
 
 from __future__ import annotations
 
@@ -6,8 +6,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
-
-from agentshowdown.orchestrator.config import (
+from backend.orchestrator.config import (
     DEFAULT_MODELS,
     KNOWN_MODELS,
     AgentProfile,
@@ -15,12 +14,14 @@ from agentshowdown.orchestrator.config import (
     Config,
     Feature,
     resolve_dangerously_skip_permissions,
+    resolve_env,
     resolve_kit_paths,
     resolve_model,
     resolve_provider,
+    uses_custom_model_endpoint,
     validate_model,
 )
-from agentshowdown.orchestrator.process import CommandError
+from backend.orchestrator.process import CommandError
 
 BASE_CONFIG = """
 repo_path: /tmp/repo
@@ -432,3 +433,145 @@ def test_resolve_kit_paths_with_no_profile_returns_spec_kit_only() -> None:
 def test_resolve_kit_paths_with_neither_returns_empty_list() -> None:
     spec = AgentSpec(agent_id="claude")
     assert resolve_kit_paths(spec, None) == []
+
+
+# --- resolve_env ---------------------------------------------------------------
+
+
+def test_resolve_env_merges_profile_and_spec_with_spec_winning() -> None:
+    profile = AgentProfile(env={"ANTHROPIC_BASE_URL": "http://old", "SHARED": "p"})
+    spec = AgentSpec(agent_id="claude", env={"ANTHROPIC_BASE_URL": "http://new", "EXTRA": "s"})
+    assert resolve_env(spec, profile) == {
+        "ANTHROPIC_BASE_URL": "http://new",
+        "SHARED": "p",
+        "EXTRA": "s",
+    }
+
+
+def test_resolve_env_with_no_profile_returns_spec_env_only() -> None:
+    spec = AgentSpec(agent_id="claude", env={"FOO": "bar"})
+    assert resolve_env(spec, None) == {"FOO": "bar"}
+
+
+def test_resolve_env_with_neither_returns_empty_dict() -> None:
+    assert resolve_env(AgentSpec(agent_id="claude"), None) == {}
+
+
+# --- uses_custom_model_endpoint ----------------------------------------------
+
+
+def test_uses_custom_model_endpoint_true_for_anthropic_base_url() -> None:
+    assert uses_custom_model_endpoint({"ANTHROPIC_BASE_URL": "http://host.docker.internal:11434"})
+
+
+def test_uses_custom_model_endpoint_false_for_unrelated_env() -> None:
+    assert not uses_custom_model_endpoint({"ANTHROPIC_AUTH_TOKEN": "ollama"})
+
+
+def test_uses_custom_model_endpoint_false_for_empty_env() -> None:
+    assert not uses_custom_model_endpoint({})
+
+
+# --- env parsing in loaders --------------------------------------------------
+
+
+def test_feature_load_all_parses_agent_env_mapping(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        "features.yaml",
+        """
+features:
+  - id: f1
+    description: "do the thing"
+    agents:
+      - agent_id: claude
+        model: "qwen2.5-coder:32b"
+        env:
+          ANTHROPIC_BASE_URL: http://host.docker.internal:11434
+          ANTHROPIC_AUTH_TOKEN: ollama
+""",
+    )
+    features = Feature.load_all(path)
+    assert features["f1"].agents == [
+        AgentSpec(
+            agent_id="claude",
+            model="qwen2.5-coder:32b",
+            env={
+                "ANTHROPIC_BASE_URL": "http://host.docker.internal:11434",
+                "ANTHROPIC_AUTH_TOKEN": "ollama",
+            },
+        )
+    ]
+
+
+def test_feature_load_all_stringifies_non_string_env_values(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        "features.yaml",
+        """
+features:
+  - id: f1
+    description: "do the thing"
+    agents:
+      - agent_id: claude
+        env:
+          PORT: 11434
+""",
+    )
+    features = Feature.load_all(path)
+    assert features["f1"].agents[0].env == {"PORT": "11434"}
+
+
+def test_feature_load_all_rejects_non_mapping_env(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        "features.yaml",
+        """
+features:
+  - id: f1
+    description: "do the thing"
+    agents:
+      - agent_id: claude
+        env:
+          - ANTHROPIC_BASE_URL=http://x
+""",
+    )
+    with pytest.raises(CommandError, match="`env` must be a mapping"):
+        Feature.load_all(path)
+
+
+def test_feature_load_all_env_defaults_empty_when_omitted(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        "features.yaml",
+        """
+features:
+  - id: f1
+    description: "do the thing"
+    agents:
+      - agent_id: claude
+""",
+    )
+    assert Feature.load_all(path)["f1"].agents[0].env == {}
+
+
+def test_config_load_parses_agent_profile_env(tmp_path: Path) -> None:
+    run_block = textwrap.indent(
+        "status_file: .agent_status.json\npoll_interval_seconds: 15\ntimeout_minutes: 60\n",
+        "    ",
+    )
+    path = _write(
+        tmp_path,
+        "config.yaml",
+        BASE_CONFIG.format(run_block=run_block)
+        + """
+agents:
+  claude:
+    env:
+      ANTHROPIC_BASE_URL: http://host.docker.internal:11434
+""",
+    )
+    config = Config.load(path)
+    assert config.agent_profiles["claude"].env == {
+        "ANTHROPIC_BASE_URL": "http://host.docker.internal:11434"
+    }

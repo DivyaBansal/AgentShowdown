@@ -1,19 +1,9 @@
 // The only place network calls to the backend live. Components import typed
 // functions from here so error handling and types stay in one place.
 //
-// Field names are snake_case to mirror the Python models exactly -- the same
-// convention the boilerplate's Order/OrderResponse already used. Translating
-// between cases at the boundary would just add a place for names to drift.
-
-export interface Order {
-  item_id: string;
-  quantity: number;
-}
-
-export interface OrderResponse {
-  status: string;
-  item_id: string;
-}
+// Field names are snake_case to mirror the Python models exactly (see the Job
+// and Run interfaces below). Translating between cases at the boundary would
+// just add a place for names to drift.
 
 export interface PreflightCheck {
   name: string;
@@ -28,7 +18,12 @@ export interface Preflight {
 
 export interface AgentInfo {
   agent_id: string;
-  has_native_builder: boolean;
+  /** Has no built-in launcher, so a `command` is the only way to run it. */
+  requires_command: boolean;
+  /** Command-only agents never receive --model, so don't offer one. */
+  accepts_model: boolean;
+  /** False where the flag exists in the spec but the CLI ignores it. */
+  supports_skip_permissions: boolean;
   verified: boolean;
   known_models: string[];
   default_model: string | null;
@@ -39,6 +34,15 @@ export interface AgentSpec {
   agent_id: string;
   run_label: string | null;
   model: string | null;
+  /** Replaces the built-in launcher entirely; required for agent kits that
+   *  have none (e.g. "shell"). Runs inside the sandbox. */
+  command?: string | null;
+  dangerously_skip_permissions?: boolean | null;
+  kit?: string[];
+  provider?: string | null;
+  /** Baked into the sandbox as `sbx create -e`. This is how an agent is
+   *  pointed at a local Ollama or a gateway. */
+  env?: Record<string, string>;
 }
 
 export interface Feature {
@@ -74,6 +78,9 @@ export interface Job {
   input_tokens: number | null;
   output_tokens: number | null;
   num_turns: number | null;
+  /** Which repo the job ran against; null for rows recorded before one
+   *  shared database held every workspace. */
+  repo: string | null;
 }
 
 export interface Run {
@@ -109,9 +116,15 @@ export interface PingResult {
   status_file_present: boolean | null;
 }
 
-export interface StartRunRequest {
+/** One feature and the agents to run it through. */
+export interface RunEntry {
   feature_id: string;
-  agents: { agent_id: string; run_label?: string | null; model?: string | null }[];
+  agents: AgentSpec[];
+}
+
+export interface StartRunRequest {
+  /** Each entry becomes its own run; they execute concurrently. */
+  entries: RunEntry[];
   telemetry?: boolean;
   verify_on?: "host" | "sandbox";
   open_pr?: boolean;
@@ -130,6 +143,12 @@ export class ApiError extends Error {
   }
 }
 
+// Every call here is either quick (a read, or kicking off a job the UI then
+// polls for) -- nothing is expected to block on a slow backend operation.
+// So one blanket timeout is enough: past this, the backend (or whatever it
+// shelled out to) is stuck, not just slow.
+const REQUEST_TIMEOUT_MS = 20_000;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // Built conditionally rather than spreading an `undefined` header:
   // exactOptionalPropertyTypes treats an explicit undefined as a real value.
@@ -137,7 +156,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (init?.body !== undefined) {
     options.headers = { "Content-Type": "application/json" };
   }
-  const res = await fetch(`/api${path}`, options);
+  const controller = new AbortController();
+  options.signal = controller.signal;
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(`/api${path}`, options);
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new ApiError(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`, 0);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     // FastAPI puts the useful part in `detail`; fall back to the status text
     // so a proxy error or a 502 still says something.
@@ -151,13 +184,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(detail, res.status);
   }
   return (await res.json()) as T;
-}
-
-export async function createOrder(order: Order): Promise<OrderResponse> {
-  return request<OrderResponse>("/orders", {
-    method: "POST",
-    body: JSON.stringify(order),
-  });
 }
 
 export async function fetchPreflight(): Promise<Preflight> {
@@ -180,8 +206,9 @@ export async function fetchRun(runId: string): Promise<{ run: Run; jobs: Job[] }
   return request<{ run: Run; jobs: Job[] }>(`/runs/${encodeURIComponent(runId)}`);
 }
 
-export async function fetchJobs(): Promise<Job[]> {
-  return (await request<{ jobs: Job[] }>("/jobs")).jobs;
+export async function fetchJobs(repo?: string): Promise<Job[]> {
+  const query = repo ? `?repo=${encodeURIComponent(repo)}` : "";
+  return (await request<{ jobs: Job[] }>(`/jobs${query}`)).jobs;
 }
 
 export async function fetchSamples(sandboxName: string): Promise<Sample[]> {
@@ -193,8 +220,8 @@ export async function fetchSandboxes(): Promise<SandboxSummary[]> {
   return (await request<{ sandboxes: SandboxSummary[] }>("/sandboxes")).sandboxes;
 }
 
-export async function startRun(body: StartRunRequest): Promise<{ run_id: string }> {
-  return request<{ run_id: string }>("/runs", {
+export async function startRun(body: StartRunRequest): Promise<{ run_ids: string[] }> {
+  return request<{ run_ids: string[] }>("/runs", {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -247,4 +274,223 @@ export async function killAllSandboxes(): Promise<{
  *  gap too large to replay arrives as a `resync` event instead. */
 export function openEventStream(): EventSource {
   return new EventSource("/api/events");
+}
+
+
+// --- workspaces, config, features, secrets, issues --------------------------
+
+export interface WorkspaceInfo {
+  path: string;
+  exists: boolean;
+  is_git_repo: boolean;
+  origin_url: string | null;
+  github_repo: string | null;
+  default_branch: string | null;
+  has_config: boolean;
+  has_features: boolean;
+}
+
+export interface WorkspaceEntry {
+  path: string;
+  origin_url: string | null;
+  github_repo: string | null;
+  cloned: boolean;
+}
+
+export interface WorkspaceList {
+  active: string | null;
+  workspaces: WorkspaceEntry[];
+}
+
+export interface CloneStatus {
+  clone_id: string;
+  url: string;
+  target_path: string;
+  state: "running" | "finished" | "failed";
+  detail: string;
+  github_repo: string | null;
+}
+
+export interface GithubConfig {
+  repo: string;
+  pat_secret_name: string;
+  base_branch: string;
+  open_pr: boolean;
+}
+
+export interface AgentConfig {
+  sbx_agent: string;
+  model: string;
+  dangerously_skip_permissions: boolean;
+  max_turns: number | null;
+  provider: string | null;
+}
+
+export interface RunConfig {
+  status_file: string;
+  liveness_interval_seconds: number;
+  poll_interval_seconds: number;
+  timeout_minutes: number;
+  max_concurrency: number;
+  verify_on: "host" | "sandbox";
+  test_command: string;
+  lint_command: string;
+  telemetry: boolean;
+  telemetry_interval_seconds: number;
+  capture_usage: boolean;
+  remove_sandbox_on_success: boolean;
+  remove_sandbox_on_failure: boolean;
+}
+
+export interface AgentProfile {
+  model: string | null;
+  provider: string | null;
+  dangerously_skip_permissions: boolean | null;
+  kit: string[];
+  env: Record<string, string>;
+}
+
+export interface ConfigValues {
+  github: GithubConfig;
+  agent: AgentConfig;
+  run: RunConfig;
+  agents: Record<string, AgentProfile>;
+}
+
+export interface ConfigDoc {
+  path: string;
+  exists: boolean;
+  source: "env" | "workspace" | "demo";
+  editable: boolean;
+  repo_path: string;
+  config: ConfigValues;
+}
+
+export interface FeaturesMeta {
+  path: string;
+  exists: boolean;
+  source: "env" | "workspace" | "demo";
+  editable: boolean;
+}
+
+export interface FeatureInput {
+  id: string;
+  description: string;
+  acceptance_criteria: string[];
+  agents: AgentSpec[];
+}
+
+export interface SecretEntry {
+  scope: string;
+  type: string;
+  name: string;
+  state: string;
+}
+
+export interface SecretList {
+  available: boolean;
+  secrets: SecretEntry[];
+}
+
+/** Exactly one of token/ref/command must be set -- the server enforces it.
+ *  Prefer ref or command: those store a *reference* sbx resolves on demand,
+ *  so the value never passes through this app. */
+export interface SecretInput {
+  service: string;
+  token?: string;
+  ref?: string;
+  command?: string;
+  sandbox?: string;
+}
+
+export interface GithubIssue {
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  url: string;
+  labels: { name: string }[];
+}
+
+export function fetchWorkspaces(): Promise<WorkspaceList> {
+  return request<WorkspaceList>("/workspaces");
+}
+
+export function inspectWorkspace(path: string): Promise<WorkspaceInfo> {
+  return request<WorkspaceInfo>("/workspaces/inspect", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
+export function selectWorkspace(path: string): Promise<WorkspaceEntry> {
+  return request<WorkspaceEntry>("/workspaces/select", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
+export function cloneRepo(url: string, directoryName?: string): Promise<CloneStatus> {
+  // Built conditionally rather than spread: exactOptionalPropertyTypes means
+  // an explicit `undefined` is a real value and would fail validation.
+  const body: { url: string; directory_name?: string } = { url };
+  if (directoryName !== undefined && directoryName !== "") {
+    body.directory_name = directoryName;
+  }
+  return request<CloneStatus>("/workspaces/clone", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchCloneStatus(cloneId: string): Promise<CloneStatus> {
+  return request<CloneStatus>(`/workspaces/clone/${encodeURIComponent(cloneId)}`);
+}
+
+export function fetchConfig(): Promise<ConfigDoc> {
+  return request<ConfigDoc>("/config");
+}
+
+export function saveConfig(config: ConfigValues): Promise<{ path: string }> {
+  return request<{ path: string }>("/config", {
+    method: "PUT",
+    body: JSON.stringify(config),
+  });
+}
+
+export function fetchFeaturesMeta(): Promise<FeaturesMeta> {
+  return request<FeaturesMeta>("/features/meta");
+}
+
+export function saveFeatures(features: FeatureInput[]): Promise<{ count: number }> {
+  return request<{ count: number }>("/features", {
+    method: "PUT",
+    body: JSON.stringify({ features }),
+  });
+}
+
+export function fetchSecrets(): Promise<SecretList> {
+  return request<SecretList>("/secrets");
+}
+
+export function storeSecret(input: SecretInput): Promise<{ service: string; method: string }> {
+  return request<{ service: string; method: string }>("/secrets", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function fetchIssues(repo?: string): Promise<{ repo: string; issues: GithubIssue[] }> {
+  const query = repo ? `?repo=${encodeURIComponent(repo)}` : "";
+  return request<{ repo: string; issues: GithubIssue[] }>(`/github/issues${query}`);
+}
+
+export function importIssues(
+  issues: number[],
+  agents: { agent_id: string }[] = [],
+): Promise<{ imported: number }> {
+  return request<{ imported: number }>("/features/import-issues", {
+    method: "POST",
+    body: JSON.stringify({ issues, agents }),
+  });
 }

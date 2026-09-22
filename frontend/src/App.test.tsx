@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { App } from "./App";
 import { MockEventSource } from "./test/setup";
@@ -42,12 +42,17 @@ function stubApi(overrides: Record<string, unknown> = {}) {
     "/api/agents": { agents: [] },
     "/api/sandboxes": { sandboxes: [] },
     "/api/jobs": { jobs: [JOB] },
+    "/api/workspaces": { active: null, workspaces: [] },
     ...overrides,
   };
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
-      const key = Object.keys(routes).find((r) => url.startsWith(r));
+      // Longest prefix wins: "/api/features/meta" must not be answered by
+      // the "/api/features" stub just because it was declared first.
+      const key = Object.keys(routes)
+        .filter((r) => url.startsWith(r))
+        .sort((a, b) => b.length - a.length)[0];
       return Promise.resolve({
         ok: key !== undefined,
         status: key === undefined ? 404 : 200,
@@ -117,5 +122,64 @@ describe("App", () => {
     await waitFor(() =>
       expect(screen.getByText(/nothing has run yet/i)).toBeInTheDocument(),
     );
+  });
+});
+
+describe("App sections", () => {
+  it("shows the comparison view first", async () => {
+    stubApi();
+    render(<App />);
+
+    expect(await screen.findByRole("tab", { name: /compare/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("heading", { name: /new showdown/i })).toBeInTheDocument();
+  });
+
+  it("switches to the setup view", async () => {
+    stubApi();
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /setup/i }));
+
+    expect(await screen.findByRole("heading", { name: /^repository$/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /features/i })).toBeInTheDocument();
+  });
+
+  it("offers a repo filter only when jobs span more than one repo", async () => {
+    stubApi({
+      "/api/jobs": {
+        jobs: [
+          { ...JOB, sandbox_name: "a", repo: "/repos/one" },
+          { ...JOB, sandbox_name: "b", repo: "/repos/two" },
+        ],
+      },
+    });
+    render(<App />);
+
+    expect(await screen.findByLabelText(/show repository/i)).toBeInTheDocument();
+  });
+
+  it("narrows the board to one repo", async () => {
+    stubApi({
+      "/api/jobs": {
+        jobs: [
+          { ...JOB, sandbox_name: "keep-me", repo: "/repos/one" },
+          { ...JOB, sandbox_name: "hide-me", repo: "/repos/two" },
+        ],
+      },
+    });
+    render(<App />);
+
+    fireEvent.change(await screen.findByLabelText(/show repository/i), {
+      target: { value: "/repos/one" },
+    });
+
+    // Each card exposes its sandbox name as an accessible label.
+    await waitFor(() =>
+      expect(screen.queryByRole("article", { name: /job hide-me/i })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("article", { name: /job keep-me/i })).toBeInTheDocument();
   });
 });

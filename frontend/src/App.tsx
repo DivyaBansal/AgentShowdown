@@ -3,163 +3,128 @@ import {
   fetchAgents,
   fetchFeatures,
   fetchPreflight,
-  fetchSamples,
   fetchSandboxes,
+  fetchWorkspaces,
   type AgentInfo,
   type Feature,
-  type Job,
   type Preflight,
-  type Sample,
   type SandboxSummary,
+  type WorkspaceList,
 } from "./api";
-import { ComparisonSpread } from "./charts/ComparisonSpread";
-import { TelemetryChart } from "./charts/TelemetryChart";
-import { assignSeriesColorsFor, seriesKey } from "./charts/palette";
-import { JobCard } from "./components/JobCard";
+import { BrandMark } from "./components/BrandMark";
 import { PreflightBanner } from "./components/PreflightBanner";
-import { RunLauncher } from "./components/RunLauncher";
-import { SandboxControls } from "./components/SandboxControls";
+import { ThemeSwitch } from "./components/ThemeSwitch";
 import { useJobStream } from "./hooks/useJobStream";
+import { useTheme } from "./hooks/useTheme";
+import { CompareView } from "./views/CompareView";
+import { SetupView } from "./views/SetupView";
+
+type Tab = "compare" | "setup";
 
 export function App() {
   const { jobs, connected, error, refresh } = useJobStream();
+  const [tab, setTab] = useState<Tab>("compare");
+  const [theme, setTheme] = useTheme();
   const [preflight, setPreflight] = useState<Preflight | null>(null);
   const [features, setFeatures] = useState<Feature[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sandboxes, setSandboxes] = useState<SandboxSummary[]>([]);
-  const [selected, setSelected] = useState<Job | null>(null);
-  const [samples, setSamples] = useState<Sample[]>([]);
+  const [workspaces, setWorkspaces] = useState<WorkspaceList>({
+    active: null,
+    workspaces: [],
+  });
 
   const loadSandboxes = useCallback(() => {
     fetchSandboxes().then(setSandboxes).catch(() => setSandboxes([]));
   }, []);
 
-  useEffect(() => {
-    fetchPreflight().then(setPreflight).catch(() => setPreflight(null));
+  // Re-read everything that depends on which repo is selected.
+  const loadWorkspaceData = useCallback(() => {
     fetchFeatures().then(setFeatures).catch(() => setFeatures([]));
+    fetchWorkspaces()
+      .then(setWorkspaces)
+      .catch(() => setWorkspaces({ active: null, workspaces: [] }));
+    fetchPreflight().then(setPreflight).catch(() => setPreflight(null));
+  }, []);
+
+  useEffect(() => {
+    loadWorkspaceData();
     fetchAgents().then(setAgents).catch(() => setAgents([]));
     loadSandboxes();
-  }, [loadSandboxes]);
-
-  useEffect(() => {
-    if (selected === null) {
-      setSamples([]);
-      return;
-    }
-    fetchSamples(selected.sandbox_name).then(setSamples).catch(() => setSamples([]));
-  }, [selected]);
-
-  // Built once from the full roster, so filtering the view can never
-  // renumber the palette.
-  const colorFor = assignSeriesColorsFor(jobs);
+  }, [loadSandboxes, loadWorkspaceData]);
 
   return (
-    <div className="notebook">
-      <main className="notebook__inner">
-        <header className="masthead">
-          <h1>agentshowdown</h1>
-          <span className="subtitle">
-            coding agents, run in sandboxes and compared
-          </span>
-          <span className="margin-note">
-            {connected ? "live" : "reconnecting…"}
-          </span>
-        </header>
+    <div className="app">
+      <header className="app-header">
+        <div className="app-header__inner">
+          <div className="brand">
+            <BrandMark />
+            {/* One text node: splitting it for two-tone weights makes the
+                accessible name "Agent Showdown". */}
+            <h1>AgentShowdown</h1>
+          </div>
 
+          {/* A tab strip rather than a router: two views do not justify a new
+              dependency and a URL scheme. */}
+          <nav role="tablist" aria-label="Sections">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "compare"}
+              onClick={() => setTab("compare")}
+            >
+              Compare
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "setup"}
+              onClick={() => setTab("setup")}
+            >
+              Setup
+            </button>
+          </nav>
+
+          <div className="app-header__actions">
+            {/* Plain text, not role="status": the preflight notice is the
+                page's one status region. */}
+            <span className={connected ? "connection connection--live" : "connection"}>
+              {connected ? "Live" : "Reconnecting…"}
+            </span>
+
+            <ThemeSwitch value={theme} onChange={setTheme} />
+          </div>
+        </div>
+      </header>
+
+      <main className="app-main">
         <PreflightBanner preflight={preflight} />
 
-        <RunLauncher
-          features={features}
-          agents={agents}
-          disabled={preflight !== null && !preflight.live_runs_possible}
-          onLaunched={() => {
-            refresh();
-            loadSandboxes();
-          }}
-        />
-
-        <section className="card">
-          <h2>Comparison</h2>
-          <ComparisonSpread jobs={jobs} />
-        </section>
-
-        <section>
-          <h2>Jobs</h2>
-          {error && <p role="alert">{error}</p>}
-          {jobs.length === 0 ? (
-            <p className="hint">Nothing has run yet.</p>
-          ) : (
-            <div className="job-grid">
-              {jobs.map((job) => (
-                <JobCard
-                  key={job.sandbox_name}
-                  job={job}
-                  color={colorFor(job)}
-                  onSelect={setSelected}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-
-        {selected && (
-          <section className="card">
-            <h2>{selected.sandbox_name}</h2>
-            <TelemetryChart samples={samples} enabled={samples.length > 0} />
-            {selected.detail && (
-              <pre className="specimen-log">{selected.detail}</pre>
-            )}
-            <button type="button" onClick={() => setSelected(null)}>
-              Close
-            </button>
-          </section>
+        {tab === "compare" ? (
+          <CompareView
+            jobs={jobs}
+            features={features}
+            agents={agents}
+            sandboxes={sandboxes}
+            preflight={preflight}
+            error={error}
+            onLaunched={() => {
+              refresh();
+              loadSandboxes();
+            }}
+            loadSandboxes={loadSandboxes}
+          />
+        ) : (
+          <SetupView
+            features={features}
+            agents={agents}
+            workspaces={workspaces}
+            onChanged={() => {
+              loadWorkspaceData();
+              refresh();
+            }}
+          />
         )}
-
-        {/* The table view is the accessibility backstop for the charts:
-            every value is here in text, including the ones a chart omits. */}
-        {jobs.length > 0 && (
-          <section className="card">
-            <h2>All values</h2>
-            <div className="scroll-x">
-              <table className="jobs">
-                <thead>
-                  <tr>
-                    <th>Agent</th>
-                    <th>Status</th>
-                    <th>Duration</th>
-                    <th>Tokens</th>
-                    <th>Lines +/−</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {jobs.map((job) => (
-                    <tr key={job.sandbox_name}>
-                      <td>{seriesKey(job)}</td>
-                      <td>{job.status}</td>
-                      <td>
-                        {job.duration_seconds === null
-                          ? "—"
-                          : `${job.duration_seconds.toFixed(1)}s`}
-                      </td>
-                      <td>
-                        {job.input_tokens === null && job.output_tokens === null
-                          ? "—"
-                          : (job.input_tokens ?? 0) + (job.output_tokens ?? 0)}
-                      </td>
-                      <td>
-                        {job.lines_added === null
-                          ? "—"
-                          : `+${job.lines_added} / −${job.lines_removed ?? 0}`}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-
-        <SandboxControls sandboxes={sandboxes} onChanged={loadSandboxes} />
       </main>
     </div>
   );

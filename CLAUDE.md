@@ -28,7 +28,7 @@ that violates it, so following it up front saves round trips.
 6. **Every bug fix needs a regression test that fails on the old code and
    passes on the new code.** Don't just fix and move on.
 7. **Log with `structlog`'s `log.info/warning/error(event_name, **kwargs)`
-   pattern** (see `src/agentshowdown/logging.py`) — not `print()`, not
+   pattern** (see `backend/logging.py`) — not `print()`, not
    `logging.info(f"...")` with interpolated strings. Structured fields,
    not formatted messages, are what make logs queryable later.
 8. **Don't commit secrets, even fake-looking placeholders that resemble
@@ -56,7 +56,7 @@ that violates it, so following it up front saves round trips.
 ```bash
 uv run ruff check . --fix
 uv run ruff format .
-uv run ty check src/
+uv run ty check backend/
 uv run pytest
 ```
 
@@ -78,9 +78,9 @@ agree to it.
 
 - Add a Pydantic model for its input, even if it's "just one field."
 - Add at least one happy-path test and one validation-failure test.
-- If it does anything worth alerting on (rate limiting, large payloads,
-  auth failures), log a distinct structured event for it — see
-  `large_order_flagged` in `main.py` as the pattern to copy.
+- If it does anything worth alerting on (destructive actions, rate
+  limiting, auth failures), log a distinct structured event for it — see
+  `kill_all_requested` in `api/routes.py` as the pattern to copy.
 
 ## What not to do
 

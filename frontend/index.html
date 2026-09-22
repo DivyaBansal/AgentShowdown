@@ -3,7 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>agentshowdown</title>
+    <title>AgentShowdown</title>
+    <script>
+      // Applies a saved theme before first paint, so a dark choice never
+      // flashes light while the bundle loads. The key must match
+      // THEME_STORAGE_KEY in src/lib/theme.ts; src/lib/theme.test.ts checks.
+      try {
+        var theme = localStorage.getItem("agentshowdown.theme");
+        if (theme === "light" || theme === "dark") {
+          document.documentElement.setAttribute("data-theme", theme);
+        }
+      } catch (e) {
+        // Storage blocked: the OS setting applies.
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

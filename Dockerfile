@@ -13,7 +13,7 @@ FROM python:3.12-slim AS python-build
 RUN pip install --no-cache-dir uv
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-COPY src/ src/
+COPY backend/ backend/
 RUN uv sync --frozen --no-dev
 
 # ---------- Stage 3: runtime ----------
@@ -24,7 +24,7 @@ RUN groupadd --system app && useradd --system --gid app app
 
 WORKDIR /app
 COPY --from=python-build /app/.venv /app/.venv
-COPY --from=python-build /app/src /app/src
+COPY --from=python-build /app/backend /app/backend
 COPY pyproject.toml uv.lock ./
 COPY --from=frontend-build /frontend/dist /app/frontend/dist
 
@@ -34,6 +34,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 USER app
 EXPOSE 8000
 
-# opentelemetry-instrument wraps the process for auto-instrumented tracing;
-# swap OTEL_EXPORTER_OTLP_ENDPOINT at deploy time to point at your collector.
-CMD ["opentelemetry-instrument", "uvicorn", "agentshowdown.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Serves the arena API and the built frontend from one port. Put a reverse
+# proxy in front that maps /api/* -> /* if the SPA is served from this image
+# (see README "Status & limitations").
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

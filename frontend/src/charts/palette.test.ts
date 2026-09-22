@@ -33,6 +33,7 @@ function job(agent_id: string, run_label: string | null = null): Job {
     input_tokens: null,
     output_tokens: null,
     num_turns: null,
+    repo: null,
   };
 }
 

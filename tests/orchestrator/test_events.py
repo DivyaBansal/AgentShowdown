@@ -1,10 +1,10 @@
-"""Tests for agentshowdown.orchestrator.events."""
+"""Tests for backend.orchestrator.events."""
 
 from __future__ import annotations
 
 import threading
 
-from agentshowdown.orchestrator.events import Event, EventBus
+from backend.orchestrator.events import Event, EventBus
 
 
 def test_publish_delivers_to_every_subscriber() -> None:

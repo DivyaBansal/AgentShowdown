@@ -1,13 +1,9 @@
-/** One job, as an index card pinned to the page. */
+/** One contender's result, with its series colour as a rail down the side. */
 
 import type { Job } from "../api";
 import { seriesKey } from "../charts/palette";
-
-function formatDuration(seconds: number | null): string | null {
-  if (seconds === null) return null;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
-}
+import { formatDiff, formatDuration, statusTone, totalTokens } from "../lib/jobs";
+import { StatusChip } from "./ui/StatusChip";
 
 /** Renders a metric, or an explicit "not reported".
  *
@@ -19,7 +15,9 @@ function Metric({ label, value }: { label: string; value: string | null }) {
   return (
     <>
       <dt>{label}</dt>
-      <dd>{value ?? <span className="no-data">not reported</span>}</dd>
+      <dd title={value ?? undefined}>
+        {value ?? <span className="no-data">not reported</span>}
+      </dd>
     </>
   );
 }
@@ -33,42 +31,34 @@ export function JobCard({
   color: string;
   onSelect?: (job: Job) => void;
 }) {
-  const tokens =
-    job.input_tokens === null && job.output_tokens === null
-      ? null
-      : `${(job.input_tokens ?? 0) + (job.output_tokens ?? 0)}`;
-  const diff =
-    job.lines_added === null && job.lines_removed === null
-      ? null
-      : `+${job.lines_added ?? 0} / −${job.lines_removed ?? 0}`;
+  const tokens = totalTokens(job);
 
   return (
-    <article className="card card--pinned job-card" aria-label={`Job ${job.sandbox_name}`}>
+    <article className="job-card" aria-label={`Job ${job.sandbox_name}`}>
+      <span className="job-card__rail" style={{ background: color }} aria-hidden="true" />
       <div className="job-card__head">
-        <span className="agent-key">
-          <span className="swatch" style={{ background: color }} aria-hidden="true" />
-          {seriesKey(job)}
-        </span>
-        <span className={`status status--${job.status}`}>{job.status}</span>
+        <div>
+          <span className="agent-key">{seriesKey(job)}</span>
+          <div className="job-card__feature">{job.feature_id}</div>
+        </div>
+        <StatusChip tone={statusTone(job.status)}>{job.status}</StatusChip>
       </div>
       <dl>
         <Metric label="Model" value={job.model} />
         <Metric label="Duration" value={formatDuration(job.duration_seconds)} />
-        <Metric label="Tokens" value={tokens} />
-        <Metric label="Diff" value={diff} />
+        <Metric label="Tokens" value={tokens === null ? null : `${tokens}`} />
+        <Metric label="Diff" value={formatDiff(job)} />
         <Metric label="Branch" value={job.branch} />
       </dl>
-      {job.pr_url && (
-        <p>
-          <a href={job.pr_url}>View pull request</a>
-        </p>
-      )}
-      {onSelect && (
-        <p>
-          <button type="button" onClick={() => onSelect(job)}>
-            Inspect
-          </button>
-        </p>
+      {(job.pr_url || onSelect) && (
+        <div className="job-card__foot">
+          {job.pr_url ? <a href={job.pr_url}>View pull request</a> : <span />}
+          {onSelect && (
+            <button type="button" onClick={() => onSelect(job)}>
+              Inspect
+            </button>
+          )}
+        </div>
       )}
     </article>
   );

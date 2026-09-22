@@ -112,7 +112,7 @@ function MetricChart({
                 textAnchor="end"
                 dominantBaseline="central"
                 fontSize="11"
-                fill="var(--text-secondary)"
+                fill="var(--text-2)"
               >
                 {row.key}
               </text>
@@ -122,7 +122,7 @@ function MetricChart({
                   y={y + BAR_H / 2}
                   dominantBaseline="central"
                   fontSize="11"
-                  fill="var(--text-muted)"
+                  fill="var(--text-3)"
                   fontStyle="italic"
                 >
                   no data
@@ -143,7 +143,7 @@ function MetricChart({
                     y={y + BAR_H / 2}
                     dominantBaseline="central"
                     fontSize="11"
-                    fill="var(--text-primary)"
+                    fill="var(--text)"
                   >
                     {metric.format(row.value)}
                   </text>
@@ -175,7 +175,7 @@ export function ComparisonSpread({ jobs }: { jobs: Job[] }) {
   if (jobs.length === 0) {
     return (
       <p className="hint">
-        No finished jobs yet — the comparison fills in as agents report back.
+        No finished jobs yet. The comparison fills in as agents report back.
       </p>
     );
   }

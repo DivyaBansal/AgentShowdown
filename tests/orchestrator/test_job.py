@@ -1,4 +1,4 @@
-"""Tests for agentshowdown.orchestrator.job."""
+"""Tests for backend.orchestrator.job."""
 
 from __future__ import annotations
 
@@ -8,11 +8,10 @@ import time
 from pathlib import Path
 
 import pytest
-
-from agentshowdown.orchestrator import job as job_module
-from agentshowdown.orchestrator.config import AgentProfile, AgentSpec, Config, Feature
-from agentshowdown.orchestrator.process import CommandError
-from agentshowdown.orchestrator.state import StateStore
+from backend.orchestrator import job as job_module
+from backend.orchestrator.config import AgentProfile, AgentSpec, Config, Feature
+from backend.orchestrator.process import CommandError
+from backend.orchestrator.state import StateStore
 
 
 def _config(tmp_path: Path, **overrides) -> Config:
@@ -182,6 +181,41 @@ def test_expand_jobs_unvalidated_agent_model_is_allowed(tmp_path: Path) -> None:
 def test_expand_jobs_command_override_skips_model_validation(tmp_path: Path) -> None:
     config = _config(tmp_path)
     spec = AgentSpec(agent_id="claude", model="not-a-real-model", command="./run-my-agent.sh")
+    features = {"f1": _feature(agents=[spec])}
+    jobs = job_module.expand_jobs(config, features, None)
+    assert jobs == [(features["f1"], spec)]
+
+
+def test_expand_jobs_custom_endpoint_env_skips_model_validation(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    spec = AgentSpec(
+        agent_id="claude",
+        model="qwen2.5-coder:32b",
+        env={"ANTHROPIC_BASE_URL": "http://host.docker.internal:11434"},
+    )
+    features = {"f1": _feature(agents=[spec])}
+    jobs = job_module.expand_jobs(config, features, None)
+    assert jobs == [(features["f1"], spec)]
+
+
+def test_expand_jobs_env_without_base_url_still_validates_model(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    spec = AgentSpec(
+        agent_id="claude", model="not-a-real-model", env={"ANTHROPIC_AUTH_TOKEN": "ollama"}
+    )
+    features = {"f1": _feature(agents=[spec])}
+    with pytest.raises(CommandError, match="Unknown model 'not-a-real-model'"):
+        job_module.expand_jobs(config, features, None)
+
+
+def test_expand_jobs_custom_endpoint_from_agent_profile_skips_validation(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        agent_profiles={
+            "claude": AgentProfile(env={"ANTHROPIC_BASE_URL": "http://host.docker.internal:11434"})
+        },
+    )
+    spec = AgentSpec(agent_id="claude", model="qwen2.5-coder:32b")
     features = {"f1": _feature(agents=[spec])}
     jobs = job_module.expand_jobs(config, features, None)
     assert jobs == [(features["f1"], spec)]
@@ -362,7 +396,10 @@ def _stub_teardown_read(monkeypatch: pytest.MonkeyPatch, calls: list[str], log: 
     def fake_exec(name, cmd, **kw):
         calls.append("sbx_exec")
         if "rev-parse" in cmd:
-            return _ok_process(f"agent/f1/claude\n---agentshowdown-log---\n{log}")
+            return _ok_process(
+                "/work/repo\n---agentshowdown-dir---\n"
+                f"agent/f1/claude\n---agentshowdown-log---\n{log}"
+            )
         return _ok_process()
 
     monkeypatch.setattr(job_module, "sbx_exec_capture", fake_exec)
@@ -658,6 +695,39 @@ def test_run_job_spec_model_overrides_agent_profile(
     assert launch_calls[0]["model_override"] == "spec-model"
 
 
+def test_run_job_merges_and_passes_resolved_env_to_sbx_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(
+        tmp_path,
+        agent_profiles={
+            "claude": AgentProfile(
+                env={"ANTHROPIC_BASE_URL": "http://host.docker.internal:11434", "SHARED": "base"}
+            )
+        },
+    )
+    feature = _feature()
+    spec = AgentSpec(
+        agent_id="claude",
+        model="qwen2.5-coder:32b",
+        env={"ANTHROPIC_AUTH_TOKEN": "ollama", "SHARED": "override"},
+    )
+
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
+    create_calls: list[dict] = []
+    monkeypatch.setattr(job_module, "sbx_create_detached", lambda **kw: create_calls.append(kw))
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: None)
+    monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "timed_out")
+
+    job_module.run_job(config, feature, spec)
+
+    assert create_calls[0]["env"] == {
+        "ANTHROPIC_BASE_URL": "http://host.docker.internal:11434",
+        "ANTHROPIC_AUTH_TOKEN": "ollama",
+        "SHARED": "override",
+    }
+
+
 def test_run_job_resolves_provider_and_skip_permissions_from_agent_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -847,3 +917,202 @@ def test_run_all_respects_max_concurrency(tmp_path: Path, monkeypatch: pytest.Mo
     job_module.run_all(config, jobs, max_workers=2)
 
     assert max_active <= 2
+
+
+def test_run_all_holds_a_shared_slot_for_each_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shared cap is what stops concurrent runs flooding the host.
+
+    max_workers alone bounds one run, so without this two runs at
+    max_concurrency 3 could put six sandboxes on the machine.
+    """
+    config = _config(tmp_path)
+    jobs = [(_feature(), AgentSpec(agent_id="claude", run_label=str(i))) for i in range(4)]
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def fake_run_job_safe(cfg, feature, spec):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+
+    monkeypatch.setattr(job_module, "run_job_safe", fake_run_job_safe)
+
+    job_module.run_all(config, jobs, max_workers=4, slots=threading.Semaphore(1))
+
+    assert max_active == 1
+
+
+def test_run_all_records_every_job_before_any_of_them_start(tmp_path: Path) -> None:
+    """Jobs waiting for a worker must still be visible on the board.
+
+    Without this, five jobs at max_concurrency 3 show as three rows and the
+    rest appear from nowhere minutes later.
+    """
+    config = _config(tmp_path)
+    jobs = [(_feature(), AgentSpec(agent_id="claude", run_label=str(i))) for i in range(5)]
+    store = StateStore(config.state_db_path)
+
+    job_module.record_queued(config, jobs, run_id="run-1")
+
+    rows = store.all_jobs()
+    assert len(rows) == 5
+    assert {row["status"] for row in rows} == {"queued"}
+    assert {row["run_id"] for row in rows} == {"run-1"}
+    # Enough detail to render a board row, not just a name.
+    assert rows[0]["feature_id"] == "f1"
+    assert rows[0]["agent_id"] == "claude"
+    assert rows[0]["model"] == "claude-haiku-4-5"
+
+
+def test_recording_queued_jobs_keeps_what_an_earlier_run_left(tmp_path: Path) -> None:
+    """run_job reads the old status to decide whether to skip or relaunch,
+    so overwriting a finished job with "queued" would lose that."""
+    config = _config(tmp_path)
+    spec = AgentSpec(agent_id="claude")
+    feature = _feature()
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+    store = StateStore(config.state_db_path)
+    store.upsert(
+        sandbox_name,
+        feature_id=feature.id,
+        agent_id="claude",
+        branch="b",
+        status="succeeded",
+        pr_url="https://example.invalid/pr/1",
+    )
+
+    job_module.record_queued(config, [(feature, spec)], run_id="run-2")
+
+    job = _job(store, sandbox_name)
+    assert job["status"] == "succeeded"
+    assert job["pr_url"] == "https://example.invalid/pr/1"
+    # It still belongs to the run that asked for it.
+    assert job["run_id"] == "run-2"
+
+
+# --- host path vs container path -------------------------------------------
+#
+# `config.repo_path` is a *host* path (it is what `sbx create` clones and what
+# every vcs.py call operates on). It was also being pasted into `sbx exec` as
+# if it were a path *inside* the container. That only worked because the demo
+# preset uses the relative "../langlearn" and the sandbox's working directory
+# is already the clone dir of that name, so `cd ../langlearn` returned to where
+# it started. An absolute host path -- what pointing the UI at a local repo
+# produces -- does not exist inside the container, so the `cd` fails, `&&`
+# short-circuits, and the run log (and with it every token metric) is lost.
+
+
+def _container_without_host_paths(host_repo_path: str, stdout: str):
+    """An sbx_exec_capture stub for a container that lacks the host's paths."""
+
+    def fake_exec(_sandbox_name, shell_cmd, **kwargs):
+        if f"cd {host_repo_path}" in shell_cmd:
+            return subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="No such file or directory"
+            )
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+
+    return fake_exec
+
+
+def test_teardown_read_survives_an_absolute_host_repo_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run log must survive when repo_path is an absolute host path."""
+    host_path = "/home/someone/code/langlearn"
+    config = _config(tmp_path, repo_path=host_path)
+    stdout = (
+        "/work/langlearn\n"
+        "---agentshowdown-dir---\n"
+        "agent/f1/claude\n"
+        "---agentshowdown-log---\n"
+        '{"type":"result","num_turns":7,'
+        '"usage":{"input_tokens":1234,"output_tokens":567}}\n'
+    )
+    seen: list[str] = []
+
+    def recording_exec(sandbox_name, shell_cmd, **kwargs):
+        seen.append(shell_cmd)
+        return _container_without_host_paths(host_path, stdout)(sandbox_name, shell_cmd, **kwargs)
+
+    monkeypatch.setattr(job_module, "sbx_exec_capture", recording_exec)
+
+    branch, run_log, container_dir = job_module._extract_before_teardown(
+        config, "box-1", "agent/f1/claude"
+    )
+
+    assert f"cd {host_path}" not in seen[0], "host path must not be cd'd to in the container"
+    assert run_log != "", "run log lost -- token metrics would be silently dropped"
+    assert branch == "agent/f1/claude"
+    assert container_dir == "/work/langlearn"
+
+
+def test_verify_on_sandbox_uses_the_discovered_container_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In-sandbox verification must target the container's own repo dir."""
+    host_path = "/home/someone/code/langlearn"
+    config = _config(tmp_path, repo_path=host_path, verify_on="sandbox")
+    seen: dict[str, object] = {}
+
+    def fake_exec(_sandbox_name, shell_cmd, **kwargs):
+        seen["cmd"] = shell_cmd
+        seen["workdir"] = kwargs.get("workdir")
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(job_module, "sbx_exec_capture", fake_exec)
+
+    job_module._verify(config, "box-1", "some-ref", "pytest", "/work/langlearn")
+
+    assert seen["workdir"] == "/work/langlearn"
+    assert host_path not in str(seen["cmd"])
+
+
+def test_teardown_read_without_a_dir_marker_still_returns_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A container that reports no directory must not cost us the run log."""
+    config = _config(tmp_path)
+    monkeypatch.setattr(
+        job_module,
+        "sbx_exec_capture",
+        lambda *a, **kw: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='agent/f1/claude\n---agentshowdown-log---\n{"num_turns":3}\n',
+            stderr="",
+        ),
+    )
+
+    branch, run_log, container_dir = job_module._extract_before_teardown(
+        config, "box-1", "agent/f1/claude"
+    )
+
+    assert branch == "agent/f1/claude"
+    assert "num_turns" in run_log
+    assert container_dir == ""
+
+
+def test_verify_on_sandbox_falls_back_to_the_default_workdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty container_dir means "wherever the sandbox already is"."""
+    config = _config(tmp_path, verify_on="sandbox")
+    seen: dict[str, object] = {}
+
+    def fake_exec(_name, cmd, **kwargs):
+        seen["workdir"] = kwargs.get("workdir")
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(job_module, "sbx_exec_capture", fake_exec)
+
+    job_module._verify(config, "box-1", "ref", "pytest", "")
+
+    assert seen["workdir"] is None

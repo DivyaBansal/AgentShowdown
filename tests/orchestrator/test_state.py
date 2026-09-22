@@ -1,14 +1,15 @@
-"""Tests for agentshowdown.orchestrator.state."""
+"""Tests for backend.orchestrator.state."""
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
 import pytest
-
-from agentshowdown.orchestrator.state import StateStore
-from agentshowdown.orchestrator.telemetry import Sample
+from backend.orchestrator import state
+from backend.orchestrator.state import StateStore
+from backend.orchestrator.telemetry import Sample
 
 
 def test_upsert_then_get_round_trips(tmp_path: Path) -> None:
@@ -221,14 +222,91 @@ def test_unreported_sample_fields_stay_null(tmp_path: Path) -> None:
     assert sample["mem_bytes"] is None
 
 
-def test_pruning_keeps_only_the_most_recent_samples(tmp_path: Path) -> None:
-    """An hour-long job at a 5s interval would otherwise grow unbounded."""
-    with StateStore(str(tmp_path / "s.sqlite3")) as store:
-        for i in range(20):
-            store.add_sample(_sample("box-1", f"t{i:03d}"))
-        deleted = store.prune_samples("box-1", keep=5)
-        remaining = store.get_samples("box-1")
+def test_upsert_sql_column_list_matches_writable_columns() -> None:
+    """The INSERT column list and _WRITABLE_COLUMNS are hand-synced.
 
-    assert deleted == 15
-    assert len(remaining) == 5
-    assert remaining[-1]["ts"] == "t019"  # newest survives
+    `upsert` binds values positionally in _WRITABLE_COLUMNS order, so a
+    column inserted mid-tuple (rather than appended) silently shifts every
+    later value into the wrong column. Nothing else in the suite would
+    catch that, which is what makes this test worth its weight.
+    """
+    insert_cols = re.search(r"INSERT INTO jobs \((.*?)\)", state._UPSERT_SQL, re.S)
+    assert insert_cols is not None
+    names = tuple(c.strip() for c in insert_cols.group(1).split(",") if c.strip())
+
+    assert names == ("sandbox_name", *state._WRITABLE_COLUMNS, "created_at", "updated_at")
+    assert state._UPSERT_SQL.count("?") == len(names)
+
+
+def test_every_writable_column_survives_a_round_trip(tmp_path: Path) -> None:
+    """Guards the positional binding: a shifted column shows up here as a
+    value landing in the wrong field."""
+    db = tmp_path / "state.sqlite3"
+    with StateStore(str(db)) as store:
+        values: dict[str, object] = {col: f"value-for-{col}" for col in state._WRITABLE_COLUMNS}
+        store.upsert("box-1", **values)
+
+        row = store.get("box-1")
+
+    assert row is not None
+    for col, expected in values.items():
+        assert row[col] == expected, f"{col} did not round-trip"
+
+
+def test_repo_column_is_added_to_a_legacy_database(tmp_path: Path) -> None:
+    """An existing database from before the shared-DB change must open."""
+    db = tmp_path / "legacy.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE jobs ("
+        "sandbox_name TEXT PRIMARY KEY, feature_id TEXT, agent_id TEXT, branch TEXT,"
+        "status TEXT, pr_url TEXT, detail TEXT, created_at TEXT, updated_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO jobs (sandbox_name, status, created_at, updated_at)"
+        " VALUES ('old-box', 'succeeded', '2026-01-01', '2026-01-01')"
+    )
+    conn.commit()
+    conn.close()
+
+    with StateStore(str(db)) as store:
+        store.upsert(
+            "new-box",
+            feature_id="f1",
+            agent_id="claude",
+            status="queued",
+            repo="/home/me/code/app",
+        )
+        rows = {row["sandbox_name"]: row for row in store.all_jobs()}
+
+    # The pre-existing row survives with a NULL repo rather than a guess.
+    assert rows["old-box"]["repo"] is None
+    assert rows["new-box"]["repo"] == "/home/me/code/app"
+
+
+def test_all_jobs_filters_by_repo(tmp_path: Path) -> None:
+    """One shared database holds every workspace, so narrowing must work."""
+    with StateStore(str(tmp_path / "state.sqlite3")) as store:
+        common = {"feature_id": "f1", "agent_id": "claude", "status": "succeeded"}
+        store.upsert("a", **common, repo="/repos/one")
+        store.upsert("b", **common, repo="/repos/two")
+        store.upsert("c", **common)
+
+        names = {job["sandbox_name"] for job in store.all_jobs(repo="/repos/one")}
+        assert names == {"a"}
+        assert len(store.all_jobs()) == 3
+
+
+def test_opens_a_database_in_a_directory_that_does_not_exist_yet(tmp_path: Path) -> None:
+    """A fresh install has no ~/.agentshowdown, and sqlite3 will not make it.
+
+    sqlite3.connect creates the database *file* but not its parent directory,
+    so without this the very first startup dies with "unable to open database
+    file" before the app can serve anything.
+    """
+    db = tmp_path / "not-created-yet" / "nested" / "jobs.sqlite3"
+
+    with StateStore(str(db)) as store:
+        store.upsert("box-1", feature_id="f1", agent_id="claude", status="queued")
+
+    assert db.exists()

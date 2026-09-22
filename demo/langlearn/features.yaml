@@ -14,10 +14,18 @@ features:
       - The drill accepts a correctly split answer and rejects an unsplit one.
       - tests/test_german_practice.sh still passes.
     agents:
+      # claude CLI pointed at a local Ollama model via env passthrough
+      # (ANTHROPIC_AUTH_TOKEN=ollama is a placeholder, not a real secret).
       - agent_id: claude
-        model: claude-haiku-4-5
-      - agent_id: codex
-        model: gpt-5.6-sol
+        model: qwen2.5-coder:32b
+        env:
+          ANTHROPIC_BASE_URL: http://host.docker.internal:11434
+          ANTHROPIC_AUTH_TOKEN: ollama
+      # opencode routed to OpenRouter; the key comes from the `openrouter`
+      # sbx service secret (`sbx secret set openrouter`), injected by the proxy.
+      # `:free` variant -- the key's account has no purchased credits.
+      - agent_id: opencode
+        model: openrouter/nvidia/nemotron-3.5-lightning:free
 
   # Axis 2: same agent twice, to see how much of the difference is just
   # run-to-run variance. run_label is what makes two runs of one agent

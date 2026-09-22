@@ -1,9 +1,9 @@
-"""Tests for agentshowdown.orchestrator.prompt."""
+"""Tests for backend.orchestrator.prompt."""
 
 from __future__ import annotations
 
-from agentshowdown.orchestrator.config import Feature
-from agentshowdown.orchestrator.prompt import build_prompt, build_resume_prompt
+from backend.orchestrator.config import Feature
+from backend.orchestrator.prompt import build_prompt, build_resume_prompt
 
 
 def test_build_prompt_includes_branch_and_status_file() -> None:

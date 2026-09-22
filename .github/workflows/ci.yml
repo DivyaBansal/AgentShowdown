@@ -31,7 +31,7 @@ jobs:
       - name: Ruff format check
         run: uv run ruff format --check .
       - name: ty type check
-        run: uv run ty check src/
+        run: uv run ty check backend/
 
   # ---------- Security: SAST, dependency audit, secrets ----------
   security:
@@ -46,7 +46,7 @@ jobs:
       - name: Install deps (locked)
         run: uv sync --frozen --all-groups
       - name: Bandit full SAST pass
-        run: uv run bandit -r src/ -c pyproject.toml
+        run: uv run bandit -r backend/ -c pyproject.toml
       - name: pip-audit (known CVEs in dependencies)
         run: uv run pip-audit
       - name: Secret scan

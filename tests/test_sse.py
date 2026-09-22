@@ -10,14 +10,13 @@ import asyncio
 import contextlib
 
 import pytest
-
-from agentshowdown.api import stream as stream_module
-from agentshowdown.api.stream import (
+from backend.api import stream as stream_module
+from backend.api.stream import (
     format_resync,
     format_sse,
     parse_last_event_id,
 )
-from agentshowdown.orchestrator.events import Event, EventBus
+from backend.orchestrator.events import Event, EventBus
 
 
 class _FakeRequest:
@@ -133,4 +132,30 @@ def test_slow_client_does_not_block_the_publisher() -> None:
         for _ in range(50):
             await asyncio.to_thread(bus.publish, "e")
 
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+def test_stream_ends_itself_so_it_cannot_block_server_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An endless stream holds uvicorn in "waiting for connections to close".
+
+    Regression test for the dev server wedging on reload: uvicorn stops
+    accepting, then waits for in-flight responses before running lifespan
+    shutdown. A browser tab keeps `/events` in-flight indefinitely, so the
+    old worker never exited, no replacement started, and every later request
+    hung in the accept queue. The stream now retires itself and the client
+    reconnects with `Last-Event-ID`.
+    """
+    monkeypatch.setattr(stream_module, "MAX_STREAM_SECONDS", 0.05)
+    monkeypatch.setattr(stream_module, "KEEPALIVE_SECONDS", 0.01)
+
+    async def scenario() -> None:
+        # A client that never hangs up -- the lifetime cap is the only thing
+        # that can end this stream.
+        request = _FakeRequest(disconnect_after=1_000_000)
+        async for _frame in stream_module.event_stream(request, None):
+            pass
+
+    # Without the cap this never returns and wait_for raises TimeoutError.
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))

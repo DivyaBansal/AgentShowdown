@@ -11,3 +11,4 @@ coverage.xml
 .env
 frontend/dist/
 frontend/node_modules/
+graphify-out/

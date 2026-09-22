@@ -95,7 +95,7 @@ function Sparkline({ series }: { series: Series }) {
           cy={y(last.value)}
           r="4"
           fill="var(--series-1)"
-          stroke="var(--surface-1)"
+          stroke="var(--surface)"
           strokeWidth="2"
         />
       </svg>

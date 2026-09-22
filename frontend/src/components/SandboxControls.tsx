@@ -1,4 +1,7 @@
-/** Ping a sandbox, remove one, or wipe them all. */
+/** Ping a sandbox, remove one, or wipe them all.
+ *
+ * Renders only the body; the surrounding Panel supplies the heading.
+ */
 
 import { useState } from "react";
 import {
@@ -8,6 +11,9 @@ import {
   type PingResult,
   type SandboxSummary,
 } from "../api";
+import { Field } from "./ui/Field";
+import { Notice } from "./ui/Notice";
+import { StatusChip } from "./ui/StatusChip";
 
 const CONFIRM_PHRASE = "KILL ALL";
 
@@ -48,15 +54,15 @@ export function SandboxControls({
   }
 
   return (
-    <section className="card">
-      <h2>Sandboxes</h2>
+    <>
       {sandboxes.length === 0 ? (
         <p className="hint">No sandboxes are running.</p>
       ) : (
-        <ul>
+        <ul className="list">
           {sandboxes.map((sandbox) => (
             <li key={sandbox.name}>
-              <code>{sandbox.name}</code> — {sandbox.status ?? "unknown"}{" "}
+              <span className="list__main mono">{sandbox.name}</span>
+              <StatusChip>{sandbox.status ?? "unknown"}</StatusChip>
               <button type="button" onClick={() => void handlePing(sandbox.name)}>
                 Ping
               </button>
@@ -66,44 +72,47 @@ export function SandboxControls({
       )}
 
       {ping && (
-        <p role="status">
+        <Notice tone="ok">
           <code>{ping.sandbox_name}</code>:{" "}
           {ping.listed
             ? `${ping.reachable ? "reachable" : "unreachable"} in ${ping.latency_ms}ms, agent ${
                 ping.agent_alive ? "alive" : "not running"
               }`
-            : "not listed — the sandbox is gone"}
-        </p>
+            : "not listed; the sandbox is gone"}
+        </Notice>
       )}
 
-      <h3>Remove every sandbox</h3>
-      <p className="hint">
-        This runs <code>sbx rm --all --force</code>, which removes every sandbox on
-        this machine — including any this app did not create. Work not yet fetched
-        from a running sandbox is lost. Type <code>{CONFIRM_PHRASE}</code> to enable.
-      </p>
-      <div className="field-row">
-        <div className="field">
-          <label htmlFor="kill-confirm">Confirmation</label>
-          <input
-            id="kill-confirm"
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            placeholder={CONFIRM_PHRASE}
-          />
+      <div className="panel__section stack">
+        <h3 className="eyebrow">Remove every sandbox</h3>
+        <p className="hint">
+          This runs <code>sbx rm --all --force</code>, which removes every sandbox on
+          this machine, including any this app did not create. Work not yet fetched
+          from a running sandbox is lost. Type <code>{CONFIRM_PHRASE}</code> to enable.
+        </p>
+        <div className="field-grid field-grid--bottom">
+          <Field id="kill-confirm" label="Confirmation">
+            <input
+              id="kill-confirm"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              placeholder={CONFIRM_PHRASE}
+            />
+          </Field>
+          <div className="actions">
+            <button
+              type="button"
+              className="btn--danger"
+              disabled={confirm !== CONFIRM_PHRASE}
+              onClick={() => void handleKillAll()}
+            >
+              Remove all sandboxes
+            </button>
+          </div>
         </div>
-        <button
-          type="button"
-          className="danger"
-          disabled={confirm !== CONFIRM_PHRASE}
-          onClick={() => void handleKillAll()}
-        >
-          Remove all sandboxes
-        </button>
       </div>
 
-      {status && <p role="status">{status}</p>}
-      {error && <p role="alert">{error}</p>}
-    </section>
+      {status && <Notice tone="ok">{status}</Notice>}
+      {error && <Notice tone="danger">{error}</Notice>}
+    </>
   );
 }
