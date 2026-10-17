@@ -57,7 +57,7 @@ def test_clone_rejects_a_dangerous_url_without_running_git(
 
     response = client.post("/workspaces/clone", json={"url": "ext::sh -c 'id'"})
 
-    assert response.status_code == HTTPStatus.UNPROCESSABLE_CONTENT
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
     assert called == []
 
 
@@ -141,28 +141,39 @@ def test_store_secret_with_a_command_builds_the_right_argv(
 def test_a_stored_token_never_reaches_the_logs(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """process.run logs the argv and CommandError embeds it -- both must mask."""
+    """process.run logs the argv and the failure detail embeds stderr -- both must mask."""
     monkeypatch.setattr(secrets_module, "sbx_available", lambda: True)
+    # Stub the subprocess, not process.run: its log line and the detail built
+    # from stderr are exactly what this test is checking. A real `sbx` call
+    # would make the test pass only on a machine that has sbx installed.
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: _completed(returncode=1, stderr=f"refused to store {TOKEN}"),
+    )
 
     response = client.post("/secrets", json={"service": "anthropic", "token": TOKEN})
 
+    assert response.status_code == HTTPStatus.BAD_GATEWAY
     out = capsys.readouterr().out
+    assert "subprocess_run" in out
     assert TOKEN not in out
     assert TOKEN not in response.text
+    assert "***" in response.json()["detail"]
 
 
 def test_secret_requires_exactly_one_source() -> None:
     both = client.post("/secrets", json={"service": "github", "token": "x", "ref": "op://v/i"})
     neither = client.post("/secrets", json={"service": "github"})
 
-    assert both.status_code == HTTPStatus.UNPROCESSABLE_CONTENT
-    assert neither.status_code == HTTPStatus.UNPROCESSABLE_CONTENT
+    assert both.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert neither.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 def test_secret_rejects_an_unknown_service() -> None:
     response = client.post("/secrets", json={"service": "not-a-service", "token": "x"})
 
-    assert response.status_code == HTTPStatus.UNPROCESSABLE_CONTENT
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 def test_list_secrets_reports_unavailable_without_sbx(
@@ -259,4 +270,4 @@ def test_import_issues_rejects_an_empty_list(tmp_path: Path) -> None:
 
     response = client.post("/features/import-issues", json={"issues": []})
 
-    assert response.status_code == HTTPStatus.UNPROCESSABLE_CONTENT
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY

@@ -58,7 +58,7 @@ def test_inspect_404s_on_a_missing_directory(tmp_path: Path) -> None:
 def test_inspect_rejects_a_dangerous_path() -> None:
     response = client.post("/workspaces/inspect", json={"path": "/proc/self"})
 
-    assert response.status_code == HTTPStatus.UNPROCESSABLE_CONTENT
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 def test_select_then_features_follow_the_workspace(tmp_path: Path) -> None:
@@ -128,7 +128,7 @@ def test_put_config_rejects_an_unknown_verify_on(tmp_path: Path) -> None:
         "run": {"verify_on": "moon"},
     }
 
-    assert client.put("/config", json=payload).status_code == HTTPStatus.UNPROCESSABLE_CONTENT
+    assert client.put("/config", json=payload).status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 def test_the_bundled_demo_preset_is_never_written_over(
@@ -198,14 +198,14 @@ def test_put_features_rejects_duplicate_ids(tmp_path: Path) -> None:
         ]
     }
 
-    assert client.put("/features", json=payload).status_code == HTTPStatus.UNPROCESSABLE_CONTENT
+    assert client.put("/features", json=payload).status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 def test_put_features_rejects_an_id_with_spaces(tmp_path: Path) -> None:
     select(_git_repo(tmp_path / "app"))
     payload = {"features": [{"id": "has spaces", "description": "x"}]}
 
-    assert client.put("/features", json=payload).status_code == HTTPStatus.UNPROCESSABLE_CONTENT
+    assert client.put("/features", json=payload).status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 def test_get_features_returns_the_full_agent_spec(tmp_path: Path) -> None:
