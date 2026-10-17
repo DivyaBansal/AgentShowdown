@@ -19,6 +19,7 @@ from backend.api import sandboxes as sandbox_ops
 from backend.api.settings import CONFIG_ENV, FEATURES_ENV, load_config
 from backend.main import app
 from backend.orchestrator import sbx as sbx_module
+from backend.orchestrator.config import AgentSpec, Feature
 from backend.orchestrator.state import StateStore
 from fastapi.testclient import TestClient
 
@@ -79,6 +80,10 @@ def _arena(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+
+
+def _refuse(*_a: object, **_k: object) -> None:
+    raise AssertionError("this should not have been called")
 
 
 # --- read endpoints ---------------------------------------------------------
@@ -228,6 +233,48 @@ def test_a_run_label_runs_the_same_agent_alongside_itself(
     assert resp.status_code == HTTPStatus.OK
 
 
+def test_respawn_dispatches_in_the_background(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sbx_module, "run", lambda *a, **k: _completed(json.dumps({"sandboxes": []}))
+    )
+    submitted: list[object] = []
+    monkeypatch.setattr(runner_module._dispatcher, "submit", lambda *a, **k: submitted.append(a))
+    config = load_config()
+    with StateStore(config.state_db_path) as store:
+        store.upsert(
+            "arena-f1-claude", feature_id="f1", agent_id="claude", branch="b", status="crashed"
+        )
+
+    response = client.post("/jobs/arena-f1-claude/respawn")
+
+    assert response.status_code == HTTPStatus.ACCEPTED
+    assert response.json() == {"status": "respawning", "sandbox_name": "arena-f1-claude"}
+    assert len(submitted) == 1
+
+
+def test_respawn_unknown_job_returns_409() -> None:
+    response = client.post("/jobs/unknown-box/respawn")
+    assert response.status_code == HTTPStatus.CONFLICT
+
+
+def test_respawn_conflicts_with_a_live_run_owning_the_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sbx_module, "run", lambda *a, **k: _completed(json.dumps({"sandboxes": []}))
+    )
+    config = load_config()
+    with StateStore(config.state_db_path) as store:
+        store.upsert(
+            "arena-f1-claude", feature_id="f1", agent_id="claude", branch="b", status="crashed"
+        )
+    runner_module._claims["arena-f1-claude"] = "run-other"
+
+    response = client.post("/jobs/arena-f1-claude/respawn")
+
+    assert response.status_code == HTTPStatus.CONFLICT
+
+
 def test_a_finished_run_releases_its_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
     finished = threading.Event()
     monkeypatch.setattr(runner_module, "run_all", lambda *a, **k: None)
@@ -365,6 +412,101 @@ def test_ping_distinguishes_a_dead_agent_from_a_gone_container(
     assert gone["reachable"] is False
 
 
+def test_stop_sandbox_stops_the_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sandbox_ops, "sbx_list", lambda: {"box-1": {}})
+    calls: list[str] = []
+    monkeypatch.setattr(sandbox_ops, "sbx_stop", calls.append)
+
+    body = client.post("/sandboxes/box-1/stop").json()
+
+    assert body == {"stopped": "box-1"}
+    assert calls == ["box-1"]
+
+
+def test_stop_sandbox_unknown_sandbox_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sandbox_ops, "sbx_list", dict)
+
+    response = client.post("/sandboxes/box-1/stop")
+
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+def test_remove_sandbox_blocks_when_commits_are_unpushed(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = load_config()
+    with StateStore(config.state_db_path) as store:
+        store.upsert(
+            "box-1",
+            feature_id="f1",
+            agent_id="claude",
+            branch="agent/f1/claude",
+            status="crashed",
+        )
+    monkeypatch.setattr(sandbox_ops, "unpushed_commit_count", lambda *a: 3)
+    rm_calls: list[str] = []
+    monkeypatch.setattr(sandbox_ops, "sbx_rm", rm_calls.append)
+
+    response = client.post("/sandboxes/box-1/rm")
+
+    assert response.status_code == HTTPStatus.CONFLICT
+    assert "3 commit" in response.json()["detail"]
+    assert rm_calls == []  # refused before anything was removed
+
+
+def test_remove_sandbox_force_bypasses_the_safeguard(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = load_config()
+    with StateStore(config.state_db_path) as store:
+        store.upsert(
+            "box-1",
+            feature_id="f1",
+            agent_id="claude",
+            branch="agent/f1/claude",
+            status="crashed",
+        )
+    monkeypatch.setattr(sandbox_ops, "unpushed_commit_count", lambda *a: 3)
+    rm_calls: list[str] = []
+    monkeypatch.setattr(sandbox_ops, "sbx_rm", rm_calls.append)
+
+    response = client.post("/sandboxes/box-1/rm", json={"force": True})
+
+    assert response.status_code == HTTPStatus.OK
+    assert rm_calls == ["box-1"]
+
+
+def test_remove_sandbox_succeeded_job_skips_the_unpushed_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pushed branch has nothing unique left in the sandbox -- no need to
+    even ask git."""
+    config = load_config()
+    with StateStore(config.state_db_path) as store:
+        store.upsert(
+            "box-1",
+            feature_id="f1",
+            agent_id="claude",
+            branch="agent/f1/claude",
+            status="succeeded",
+        )
+    monkeypatch.setattr(sandbox_ops, "unpushed_commit_count", _refuse)
+    rm_calls: list[str] = []
+    monkeypatch.setattr(sandbox_ops, "sbx_rm", rm_calls.append)
+
+    response = client.post("/sandboxes/box-1/rm")
+
+    assert response.status_code == HTTPStatus.OK
+    assert rm_calls == ["box-1"]
+
+
+def test_remove_sandbox_without_a_body_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The route used to take no body at all; old callers must still work."""
+    rm_calls: list[str] = []
+    monkeypatch.setattr(sandbox_ops, "sbx_rm", rm_calls.append)
+
+    response = client.post("/sandboxes/unknown-box/rm")
+
+    assert response.status_code == HTTPStatus.OK
+    assert rm_calls == ["unknown-box"]
+
+
 def test_kill_all_requires_the_typed_confirmation() -> None:
     """A mis-click must not be able to wipe every sandbox on the host."""
     assert (
@@ -465,6 +607,45 @@ def test_list_jobs_rejects_an_over_long_repo_filter() -> None:
     assert response.status_code == 422
 
 
+def test_get_log_returns_the_sandbox_tail(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed("line one\nline two\n"))
+
+    body = client.get("/jobs/box-1/log").json()
+
+    assert body == {"sandbox_name": "box-1", "tail": "line one\nline two\n"}
+
+
+def test_get_log_passes_the_tail_length_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_k: object) -> subprocess.CompletedProcess:
+        calls.append(cmd)
+        return _completed("")
+
+    monkeypatch.setattr(sbx_module, "run", fake_run)
+
+    client.get("/jobs/box-1/log", params={"tail": 50})
+
+    assert any("tail -n 50" in " ".join(cmd) for cmd in calls)
+
+
+def test_get_log_rejects_tail_out_of_bounds() -> None:
+    assert client.get("/jobs/box-1/log", params={"tail": 0}).status_code == 422
+    assert client.get("/jobs/box-1/log", params={"tail": 5000}).status_code == 422
+
+
+def test_get_log_on_a_gone_sandbox_returns_empty_tail_not_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same leniency as /samples: "nothing yet" and "never existed" look the
+    same from here, so this is an empty result, not a 404."""
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed("", returncode=1))
+
+    body = client.get("/jobs/box-1/log").json()
+
+    assert body == {"sandbox_name": "box-1", "tail": ""}
+
+
 def test_start_run_carries_the_full_agent_spec(monkeypatch: pytest.MonkeyPatch) -> None:
     """env/command/kit must survive the API, or the UI cannot express them.
 
@@ -506,3 +687,77 @@ def test_start_run_carries_the_full_agent_spec(monkeypatch: pytest.MonkeyPatch) 
     assert spec.kit == ["./kits/auth"]
     assert spec.provider == "ollama"
     assert spec.run_label == "a"
+
+
+# --- reattach_in_flight_jobs -------------------------------------------------
+
+
+def test_reattach_in_flight_jobs_marks_gone_sandboxes_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner_module, "sbx_list", dict)
+    config = load_config()
+    with StateStore(config.state_db_path) as store:
+        store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="running")
+
+    lost, reattached = runner_module.reattach_in_flight_jobs(config, {})
+
+    assert (lost, reattached) == (1, 0)
+    with StateStore(config.state_db_path) as store:
+        assert store.get("box-1")["status"] == "lost"
+
+
+def test_reattach_in_flight_jobs_resubmits_alive_sandboxes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing is left watching a surviving sandbox after a restart --
+    this is what gets it a new watcher instead of marking it lost."""
+    monkeypatch.setattr(runner_module, "sbx_list", lambda: {"arena-f1-claude": {}})
+    submitted: list[object] = []
+    monkeypatch.setattr(runner_module._dispatcher, "submit", lambda *a, **k: submitted.append(a))
+    config = load_config()
+    with StateStore(config.state_db_path) as store:
+        store.upsert(
+            "arena-f1-claude", feature_id="f1", agent_id="claude", branch="b", status="running"
+        )
+    # Must match sandbox_name_for("f1", AgentSpec(agent_id="claude")) for
+    # find_spec_for_sandbox to resolve it back to this spec.
+    feature = Feature(
+        id="f1", description="d", acceptance_criteria=[], agents=[AgentSpec(agent_id="claude")]
+    )
+
+    lost, reattached = runner_module.reattach_in_flight_jobs(config, {"f1": feature})
+
+    assert (lost, reattached) == (0, 1)
+    assert len(submitted) == 1
+
+
+def test_reattach_in_flight_jobs_skips_unknown_feature(monkeypatch: pytest.MonkeyPatch) -> None:
+    """features.yaml may have changed since the job was launched -- a
+    guess at the wrong spec is worse than leaving it for a human."""
+    monkeypatch.setattr(runner_module, "sbx_list", lambda: {"box-1": {}})
+    submitted: list[object] = []
+    monkeypatch.setattr(runner_module._dispatcher, "submit", lambda *a, **k: submitted.append(a))
+    config = load_config()
+    with StateStore(config.state_db_path) as store:
+        store.upsert(
+            "box-1", feature_id="unknown-feature", agent_id="claude", branch="b", status="running"
+        )
+
+    lost, reattached = runner_module.reattach_in_flight_jobs(config, {})
+
+    assert (lost, reattached) == (0, 0)
+    assert submitted == []
+
+
+def test_reattach_in_flight_jobs_ignores_terminal_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner_module, "sbx_list", dict)
+    config = load_config()
+    with StateStore(config.state_db_path) as store:
+        store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="succeeded")
+
+    lost, reattached = runner_module.reattach_in_flight_jobs(config, {})
+
+    assert (lost, reattached) == (0, 0)
+    with StateStore(config.state_db_path) as store:
+        assert store.get("box-1")["status"] == "succeeded"

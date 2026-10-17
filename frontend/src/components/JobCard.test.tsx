@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { JobCard } from "./JobCard";
 import type { Job } from "../api";
 
@@ -29,6 +29,7 @@ function job(overrides: Partial<Job> = {}): Job {
     output_tokens: 80,
     num_turns: 4,
     repo: null,
+    log_tail: null,
     ...overrides,
   };
 }
@@ -108,5 +109,71 @@ describe("JobCard partial metrics", () => {
   it("omits the inspect button when no handler is given", () => {
     render(<JobCard job={job()} color="c" />);
     expect(screen.queryByRole("button", { name: /inspect/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("JobCard actions", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("offers Stop for a running job, and calls the stop endpoint", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ stopped: "arena-f1-claude" }) }),
+    );
+    render(<JobCard job={job({ status: "running" })} color="c" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/sandboxes/arena-f1-claude/stop",
+        expect.anything(),
+      ),
+    );
+  });
+
+  it("offers Respawn for a dead job, and calls the respawn endpoint", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: "respawning", sandbox_name: "arena-f1-claude" }),
+      }),
+    );
+    render(<JobCard job={job({ status: "crashed" })} color="c" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Respawn" }));
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/jobs/arena-f1-claude/respawn",
+        expect.anything(),
+      ),
+    );
+  });
+
+  it("offers neither Stop nor Respawn for a job that already succeeded", () => {
+    render(<JobCard job={job({ status: "succeeded" })} color="c" />);
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Respawn" })).not.toBeInTheDocument();
+  });
+
+  it("surfaces a stop failure as an alert", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: "Server Error",
+        json: async () => ({ detail: "sbx unreachable" }),
+      }),
+    );
+    render(<JobCard job={job({ status: "running" })} color="c" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(/sbx unreachable/i),
+    );
   });
 });

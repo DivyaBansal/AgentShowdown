@@ -8,6 +8,7 @@ import {
   ApiError,
   killAllSandboxes,
   pingSandbox,
+  removeSandbox,
   type PingResult,
   type SandboxSummary,
 } from "../api";
@@ -28,6 +29,12 @@ export function SandboxControls({
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  // Set when a plain remove was refused for having commits unique to that
+  // sandbox -- offers a one-click "remove anyway" rather than making the
+  // force flag a permanent, easy-to-misclick checkbox.
+  const [removeConflict, setRemoveConflict] = useState<{ name: string; message: string } | null>(
+    null,
+  );
 
   async function handlePing(name: string) {
     setError(null);
@@ -35,6 +42,21 @@ export function SandboxControls({
       setPing(await pingSandbox(name));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Ping failed");
+    }
+  }
+
+  async function handleRemove(name: string, force = false) {
+    setError(null);
+    setRemoveConflict(null);
+    try {
+      await removeSandbox(name, force);
+      onChanged();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setRemoveConflict({ name, message: err.message });
+        return;
+      }
+      setError(err instanceof ApiError ? err.message : "Could not remove the sandbox");
     }
   }
 
@@ -66,9 +88,25 @@ export function SandboxControls({
               <button type="button" onClick={() => void handlePing(sandbox.name)}>
                 Ping
               </button>
+              <button type="button" onClick={() => void handleRemove(sandbox.name)}>
+                Remove
+              </button>
             </li>
           ))}
         </ul>
+      )}
+
+      {removeConflict && (
+        <Notice tone="warn">
+          {removeConflict.message}{" "}
+          <button
+            type="button"
+            className="btn--danger"
+            onClick={() => void handleRemove(removeConflict.name, true)}
+          >
+            Remove anyway
+          </button>
+        </Notice>
       )}
 
       {ping && (

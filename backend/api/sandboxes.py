@@ -6,9 +6,10 @@ import shlex
 import time
 
 from backend.logging import log
-from backend.orchestrator.process import RunOptions, run
-from backend.orchestrator.sbx import sbx_exec_capture, sbx_list, sbx_rm
+from backend.orchestrator.process import CommandError, RunOptions, run
+from backend.orchestrator.sbx import sbx_exec_capture, sbx_list, sbx_rm, sbx_stop
 from backend.orchestrator.state import StateStore
+from backend.orchestrator.vcs import unpushed_commit_count
 
 PING_MARKER = "agentshowdown-ping-ok"
 
@@ -63,24 +64,86 @@ def ping(sandbox_name: str, status_file: str) -> dict[str, object]:
     }
 
 
-def remove(sandbox_name: str, state_db_path: str) -> dict[str, object]:
-    """Removes one sandbox and marks its job lost.
+def stop(sandbox_name: str, state_db_path: str) -> dict[str, object]:
+    """Stops a sandbox's container without removing it.
+
+    The filesystem and git history survive; `respawn_job` restarts it
+    later via `sbx_restart_detached`. Unlike `remove`, this requires the
+    sandbox to currently exist -- stopping something already gone is
+    almost always a sign the caller's view is stale, worth surfacing
+    rather than silently succeeding.
 
     Args:
-        sandbox_name: Sandbox to remove.
+        sandbox_name: Sandbox to stop.
         state_db_path: Where job state lives.
 
     Returns:
         What happened, for the API response.
+
+    Raises:
+        CommandError: If no sandbox by that name currently exists.
     """
-    sbx_rm(sandbox_name)
+    if sandbox_name not in sbx_list():
+        raise CommandError(f"Unknown sandbox: {sandbox_name}")
+    sbx_stop(sandbox_name)
     with StateStore(state_db_path) as store:
         if store.get(sandbox_name) is not None:
+            store.upsert(sandbox_name, status="stopped", detail="stopped from the UI")
+    log.warning("job_stop_requested", sandbox=sandbox_name)
+    return {"stopped": sandbox_name}
+
+
+def remove(
+    sandbox_name: str,
+    state_db_path: str,
+    repo_path: str,
+    base_branch: str,
+    *,
+    force: bool = False,
+) -> dict[str, object]:
+    """Removes one sandbox and marks its job lost.
+
+    Refuses when the job's branch has commits that exist nowhere but this
+    sandbox, unless `force` is set: `sbx rm` deletes the sandbox's
+    filesystem along with its git history, so those commits would be gone
+    for good. Only commits are checked -- uncommitted changes inside the
+    sandbox would need an extra `sbx exec` to detect, which this doesn't do.
+
+    Args:
+        sandbox_name: Sandbox to remove.
+        state_db_path: Where job state lives.
+        repo_path: Host repo the job's branch would be fetched into, for
+            the unpushed-commit check.
+        base_branch: The branch's base (e.g. "main"), for the same check.
+        force: Skip the unpushed-commit check.
+
+    Returns:
+        What happened, for the API response.
+
+    Raises:
+        CommandError: If the branch has commits unique to this sandbox and
+            force is False.
+    """
+    with StateStore(state_db_path) as store:
+        job = store.get(sandbox_name)
+        if not force and job is not None and job["status"] != "succeeded" and job.get("branch"):
+            unpushed = unpushed_commit_count(repo_path, base_branch, job["branch"], sandbox_name)
+            if unpushed:
+                raise CommandError(
+                    f"'{sandbox_name}' has {unpushed} commit(s) on branch "
+                    f"'{job['branch']}' that exist only in this sandbox -- "
+                    f"removing it would lose them. Pass force to delete anyway."
+                )
+
+        sbx_rm(sandbox_name)
+        if job is not None:
             store.upsert(
                 sandbox_name,
                 status="lost",
                 detail="sandbox removed from the UI",
             )
+    if force:
+        log.warning("sandbox_delete_forced", sandbox=sandbox_name)
     log.warning("sandbox_removed", sandbox=sandbox_name)
     return {"removed": [sandbox_name]}
 

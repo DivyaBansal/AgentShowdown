@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from backend.orchestrator import job as job_module
 from backend.orchestrator.config import AgentProfile, AgentSpec, Config, Feature
+from backend.orchestrator.events import bus as event_bus
 from backend.orchestrator.process import CommandError
 from backend.orchestrator.state import StateStore
 
@@ -271,8 +272,11 @@ def test_poll_until_signal_returns_done_when_status_file_says_so(
     monkeypatch.setattr(job_module, "sbx_status", lambda name: "running")
     monkeypatch.setattr(
         job_module,
-        "sbx_read_status",
-        lambda name, path: {"state": "done", "message": "yay"},
+        "sbx_read_status_and_tail",
+        lambda name, status_file, log_path, tail_lines: (
+            {"state": "done", "message": "yay"},
+            "building...\ndone.",
+        ),
     )
 
     result = job_module.poll_until_signal(config, store, "box-1", time.monotonic() + 10)
@@ -280,6 +284,8 @@ def test_poll_until_signal_returns_done_when_status_file_says_so(
     assert result == "done"
     assert _job(store, "box-1")["status"] == "done"
     assert _job(store, "box-1")["detail"] == "yay"
+    # The tail is written on the same tick, via the dedicated log_tail path.
+    assert _job(store, "box-1")["log_tail"] == "building...\ndone."
 
 
 def test_poll_until_signal_returns_awaiting_input(
@@ -291,14 +297,45 @@ def test_poll_until_signal_returns_awaiting_input(
     monkeypatch.setattr(job_module, "sbx_status", lambda name: "running")
     monkeypatch.setattr(
         job_module,
-        "sbx_read_status",
-        lambda name, path: {"state": "awaiting_input", "message": "which option?"},
+        "sbx_read_status_and_tail",
+        lambda name, status_file, log_path, tail_lines: (
+            {"state": "awaiting_input", "message": "which option?"},
+            "",
+        ),
     )
 
     result = job_module.poll_until_signal(config, store, "box-1", time.monotonic() + 10)
 
     assert result == "awaiting_input"
     assert _job(store, "box-1")["detail"] == "which option?"
+
+
+def test_poll_until_signal_publishes_job_log_on_each_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live tail is broadcast on its own event, not folded into
+    job_changed -- see StateStore.update_log_tail."""
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="running")
+    monkeypatch.setattr(job_module, "sbx_status", lambda name: "running")
+    monkeypatch.setattr(
+        job_module,
+        "sbx_read_status_and_tail",
+        lambda name, status_file, log_path, tail_lines: (
+            {"state": "done", "message": "yay"},
+            "line one\nline two",
+        ),
+    )
+    received = []
+    unsubscribe = event_bus.subscribe(lambda e: received.append(e) if e.type == "job_log" else None)
+    try:
+        job_module.poll_until_signal(config, store, "box-1", time.monotonic() + 10)
+    finally:
+        unsubscribe()
+
+    assert len(received) == 1
+    assert received[0].data == {"sandbox_name": "box-1", "tail": "line one\nline two"}
 
 
 def test_poll_until_signal_container_crash_with_no_status_returns_crashed(
@@ -354,16 +391,37 @@ def test_poll_until_signal_unknown_state_keeps_polling_until_done(
     store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="running")
     responses = iter(
         [
-            {"state": "unknown", "message": "bad json"},
-            {"state": "done", "message": "ok"},
+            ({"state": "unknown", "message": "bad json"}, ""),
+            ({"state": "done", "message": "ok"}, ""),
         ]
     )
     monkeypatch.setattr(job_module, "sbx_status", lambda name: "running")
-    monkeypatch.setattr(job_module, "sbx_read_status", lambda name, path: next(responses))
+    monkeypatch.setattr(
+        job_module,
+        "sbx_read_status_and_tail",
+        lambda name, status_file, log_path, tail_lines: next(responses),
+    )
 
     result = job_module.poll_until_signal(config, store, "box-1", time.monotonic() + 10)
 
     assert result == "done"
+
+
+def test_poll_until_signal_returns_stopped_without_reading_status_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deliberate `sbx stop` must be detected directly, not via a status
+    read that would fail against a stopped (non-exec-able) container."""
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="running")
+    monkeypatch.setattr(job_module, "sbx_status", lambda name: "stopped")
+    monkeypatch.setattr(job_module, "sbx_read_status_and_tail", _refuse)
+
+    result = job_module.poll_until_signal(config, store, "box-1", time.monotonic() + 10)
+
+    assert result == "stopped"
+    assert _job(store, "box-1")["status"] == "stopped"
 
 
 # --- _finalize_success --------------------------------------------------------
@@ -598,6 +656,27 @@ def test_run_job_full_success_path(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     job_module.run_job(config, feature, spec)
 
     assert len(finalize_calls) == 1
+
+
+def test_run_job_stopped_status_does_not_remove_the_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deliberate stop must leave the sandbox in place for respawn,
+    unlike every other non-"done" outcome."""
+    config = _config(tmp_path, remove_sandbox_on_failure=True)
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
+    monkeypatch.setattr(job_module, "sbx_create_detached", lambda **kw: None)
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: None)
+    monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "stopped")
+    rm_calls: list[str] = []
+    monkeypatch.setattr(job_module, "sbx_rm", rm_calls.append)
+
+    job_module.run_job(config, feature, spec)
+
+    assert rm_calls == []
 
 
 def test_run_job_reattaches_to_running_sandbox_without_relaunching(
@@ -863,6 +942,196 @@ def test_resume_job_awaiting_input_again_does_not_finalize(
     monkeypatch.setattr(job_module, "_finalize_success", _refuse)
 
     job_module.resume_job(config, {"f1": feature}, sandbox_name, "use option B")  # must not raise
+
+
+# --- plan_respawn / respawn_job ----------------------------------------------
+
+
+def test_plan_respawn_unknown_job_raises(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    with pytest.raises(CommandError, match="No known job"):
+        job_module.plan_respawn(config, {}, "box-1")
+
+
+def test_plan_respawn_unknown_feature_raises(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="crashed")
+
+    with pytest.raises(CommandError, match="not found in the loaded features"):
+        job_module.plan_respawn(config, {}, "box-1")
+
+
+def test_plan_respawn_live_sandbox_not_stopped_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    feature = _feature()
+    sandbox_name = job_module.sandbox_name_for(feature.id, AgentSpec(agent_id="claude"))
+    store.upsert(sandbox_name, feature_id="f1", agent_id="claude", branch="b", status="running")
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: True)
+
+    with pytest.raises(CommandError, match="only a stopped sandbox"):
+        job_module.plan_respawn(config, {"f1": feature}, sandbox_name)
+
+
+def test_plan_respawn_live_stopped_sandbox_returns_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+    store.upsert(sandbox_name, feature_id="f1", agent_id="claude", branch="b", status="stopped")
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: True)
+
+    _feature_out, spec_out, in_place = job_module.plan_respawn(
+        config, {"f1": feature}, sandbox_name
+    )
+
+    assert in_place is True
+    assert spec_out == spec
+
+
+def test_plan_respawn_gone_succeeded_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    feature = _feature()
+    sandbox_name = job_module.sandbox_name_for(feature.id, AgentSpec(agent_id="claude"))
+    store.upsert(sandbox_name, feature_id="f1", agent_id="claude", branch="b", status="succeeded")
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
+
+    with pytest.raises(CommandError, match="already succeeded"):
+        job_module.plan_respawn(config, {"f1": feature}, sandbox_name)
+
+
+def test_plan_respawn_gone_awaiting_input_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    feature = _feature()
+    sandbox_name = job_module.sandbox_name_for(feature.id, AgentSpec(agent_id="claude"))
+    store.upsert(
+        sandbox_name, feature_id="f1", agent_id="claude", branch="b", status="awaiting_input"
+    )
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
+
+    with pytest.raises(CommandError, match="no question left to answer"):
+        job_module.plan_respawn(config, {"f1": feature}, sandbox_name)
+
+
+def test_plan_respawn_gone_crashed_returns_fresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    feature = _feature()
+    sandbox_name = job_module.sandbox_name_for(feature.id, AgentSpec(agent_id="claude"))
+    store.upsert(sandbox_name, feature_id="f1", agent_id="claude", branch="b", status="crashed")
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
+
+    _f, _s, in_place = job_module.plan_respawn(config, {"f1": feature}, sandbox_name)
+
+    assert in_place is False
+
+
+def test_respawn_job_in_place_restarts_and_relaunches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+    StateStore(config.state_db_path).upsert(
+        sandbox_name, feature_id=feature.id, agent_id="claude", branch="b", status="stopped"
+    )
+
+    restart_calls = []
+    launch_calls = []
+    monkeypatch.setattr(
+        job_module,
+        "sbx_restart_detached",
+        lambda name, agent: restart_calls.append((name, agent)),
+    )
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: launch_calls.append(kw))
+    monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "done")
+    finalize_calls = []
+    monkeypatch.setattr(job_module, "_finalize_success", lambda *a, **kw: finalize_calls.append(a))
+
+    job_module.respawn_job(config, feature, spec, sandbox_name, in_place=True)
+
+    assert restart_calls == [(sandbox_name, "claude")]
+    assert launch_calls[0]["resume"] is True
+    assert len(finalize_calls) == 1
+
+
+def test_respawn_job_fresh_delegates_to_run_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+
+    run_job_calls = []
+    monkeypatch.setattr(job_module, "run_job", lambda cfg, f, s: run_job_calls.append((f, s)))
+    monkeypatch.setattr(job_module, "sbx_restart_detached", _refuse)
+
+    job_module.respawn_job(config, feature, spec, sandbox_name, in_place=False)
+
+    assert run_job_calls == [(feature, spec)]
+
+
+# --- reattach_job --------------------------------------------------------------
+
+
+def test_reattach_job_does_not_relaunch_the_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+    StateStore(config.state_db_path).upsert(
+        sandbox_name, feature_id=feature.id, agent_id="claude", branch="b", status="running"
+    )
+
+    monkeypatch.setattr(job_module, "sbx_launch_agent", _refuse)
+    monkeypatch.setattr(job_module, "sbx_create_detached", _refuse)
+    monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "done")
+    finalize_calls = []
+    monkeypatch.setattr(job_module, "_finalize_success", lambda *a, **kw: finalize_calls.append(a))
+
+    job_module.reattach_job(config, feature, spec, sandbox_name)
+
+    assert len(finalize_calls) == 1
+
+
+def test_reattach_job_removes_sandbox_on_a_failed_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Proves a reattached job rejoins the normal finalize/teardown path,
+    not just the happy one."""
+    config = _config(tmp_path, remove_sandbox_on_failure=True)
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+    StateStore(config.state_db_path).upsert(
+        sandbox_name, feature_id=feature.id, agent_id="claude", branch="b", status="running"
+    )
+
+    monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "timed_out")
+    rm_calls: list[str] = []
+    monkeypatch.setattr(job_module, "sbx_rm", rm_calls.append)
+
+    job_module.reattach_job(config, feature, spec, sandbox_name)
+
+    assert rm_calls == [sandbox_name]
 
 
 # --- run_job_safe / run_all --------------------------------------------------

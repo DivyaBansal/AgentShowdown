@@ -323,6 +323,117 @@ def test_sbx_read_status_malformed_json_returns_unknown_state(
     assert status["state"] == "unknown"
 
 
+# --- sbx_read_status_and_tail / sbx_tail_log -----------------------------------
+
+
+def test_read_status_and_tail_combines_status_and_log_in_one_exec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def fake_exec(name, cmd, **kw):
+        calls.append(cmd)
+        return _completed(
+            stdout='{"state": "done", "message": "yay"}\n'
+            "---agentshowdown-tail---\nbuilding...\ndone.\n"
+        )
+
+    monkeypatch.setattr(sbx, "sbx_exec_capture", fake_exec)
+
+    status, tail = sbx.sbx_read_status_and_tail(
+        "box-1", ".agent_status.json", "/tmp/sbx-agent-run.log", 200
+    )
+
+    assert len(calls) == 1  # one exec covers both reads
+    assert status == {"state": "done", "message": "yay"}
+    assert tail == "building...\ndone.\n"  # tail's own trailing newline is kept
+
+
+def test_read_status_and_tail_missing_status_file_returns_none_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sbx,
+        "sbx_exec_capture",
+        lambda *a, **k: _completed(stdout="---agentshowdown-tail---\nsome output\n"),
+    )
+
+    status, tail = sbx.sbx_read_status_and_tail(
+        "box-1", ".agent_status.json", "/tmp/sbx-agent-run.log", 200
+    )
+
+    assert status is None  # still running, from the caller's point of view
+    assert tail == "some output\n"
+
+
+def test_read_status_and_tail_malformed_status_returns_unknown_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sbx,
+        "sbx_exec_capture",
+        lambda *a, **k: _completed(stdout="not json\n---agentshowdown-tail---\n"),
+    )
+
+    status, _tail = sbx.sbx_read_status_and_tail(
+        "box-1", ".agent_status.json", "/tmp/sbx-agent-run.log", 200
+    )
+
+    assert status is not None
+    assert status["state"] == "unknown"
+
+
+def test_read_status_and_tail_missing_log_returns_empty_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sbx,
+        "sbx_exec_capture",
+        lambda *a, **k: _completed(stdout='{"state": "done"}\n---agentshowdown-tail---\n'),
+    )
+
+    _status, tail = sbx.sbx_read_status_and_tail(
+        "box-1", ".agent_status.json", "/tmp/sbx-agent-run.log", 200
+    )
+
+    assert tail == ""
+
+
+# --- sbx_stop / sbx_restart_detached -------------------------------------------
+
+
+def test_sbx_stop_calls_sbx_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: calls.append(cmd) or _completed())
+    sbx.sbx_stop("box-1")
+    assert calls == [["sbx", "stop", "box-1"]]
+
+
+def test_sbx_restart_detached_calls_sbx_run_with_name_and_detached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: calls.append(cmd) or _completed())
+    sbx.sbx_restart_detached("box-1", "claude")
+    assert calls == [["sbx", "run", "claude", "--name", "box-1", "--detached"]]
+
+
+def test_sbx_tail_log_passes_through_sandbox_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = {}
+
+    def fake_exec(name, cmd, **kw):
+        seen["name"], seen["cmd"] = name, cmd
+        return _completed(stdout="line one\nline two\n")
+
+    monkeypatch.setattr(sbx, "sbx_exec_capture", fake_exec)
+
+    tail = sbx.sbx_tail_log("box-1", "/tmp/sbx-agent-run.log", 50)
+
+    assert tail == "line one\nline two\n"
+    assert seen["name"] == "box-1"
+    assert "tail -n 50" in seen["cmd"]
+
+
 # --- build_copilot_cmd ---------------------------------------------------------
 
 

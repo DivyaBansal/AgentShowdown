@@ -1,8 +1,17 @@
 /** One contender's result, with its series colour as a rail down the side. */
 
-import type { Job } from "../api";
+import { useState } from "react";
+import { ApiError, respawnJob, stopSandbox, type Job } from "../api";
 import { seriesKey } from "../charts/palette";
-import { formatDiff, formatDuration, statusTone, totalTokens } from "../lib/jobs";
+import {
+  canRespawn,
+  canStop,
+  formatDiff,
+  formatDuration,
+  statusTone,
+  totalTokens,
+} from "../lib/jobs";
+import { Notice } from "./ui/Notice";
 import { StatusChip } from "./ui/StatusChip";
 
 /** Renders a metric, or an explicit "not reported".
@@ -32,6 +41,34 @@ export function JobCard({
   onSelect?: (job: Job) => void;
 }) {
   const tokens = totalTokens(job);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const showStop = canStop(job.status);
+  const showRespawn = canRespawn(job.status);
+
+  async function handleStop() {
+    setError(null);
+    setPending(true);
+    try {
+      await stopSandbox(job.sandbox_name);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not stop the job");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function handleRespawn() {
+    setError(null);
+    setPending(true);
+    try {
+      await respawnJob(job.sandbox_name);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not respawn the job");
+    } finally {
+      setPending(false);
+    }
+  }
 
   return (
     <article className="job-card" aria-label={`Job ${job.sandbox_name}`}>
@@ -50,16 +87,29 @@ export function JobCard({
         <Metric label="Diff" value={formatDiff(job)} />
         <Metric label="Branch" value={job.branch} />
       </dl>
-      {(job.pr_url || onSelect) && (
+      {(job.pr_url || onSelect || showStop || showRespawn) && (
         <div className="job-card__foot">
           {job.pr_url ? <a href={job.pr_url}>View pull request</a> : <span />}
-          {onSelect && (
-            <button type="button" onClick={() => onSelect(job)}>
-              Inspect
-            </button>
-          )}
+          <div className="actions">
+            {showStop && (
+              <button type="button" disabled={pending} onClick={() => void handleStop()}>
+                Stop
+              </button>
+            )}
+            {showRespawn && (
+              <button type="button" disabled={pending} onClick={() => void handleRespawn()}>
+                Respawn
+              </button>
+            )}
+            {onSelect && (
+              <button type="button" onClick={() => onSelect(job)}>
+                Inspect
+              </button>
+            )}
+          </div>
         </div>
       )}
+      {error && <Notice tone="danger">{error}</Notice>}
     </article>
   );
 }

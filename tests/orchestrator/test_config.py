@@ -76,6 +76,27 @@ def test_config_load_max_concurrency_defaults_to_three(tmp_path: Path) -> None:
     assert config.max_concurrency == 3
 
 
+def test_config_load_log_tail_lines_defaults_to_200(tmp_path: Path) -> None:
+    run_block = textwrap.indent(
+        "status_file: .agent_status.json\npoll_interval_seconds: 15\ntimeout_minutes: 60\n",
+        "    ",
+    )
+    path = _write(tmp_path, "config.yaml", BASE_CONFIG.format(run_block=run_block))
+    config = Config.load(path)
+    assert config.log_tail_lines == 200
+
+
+def test_config_load_log_tail_lines_override(tmp_path: Path) -> None:
+    run_block = textwrap.indent(
+        "status_file: .agent_status.json\npoll_interval_seconds: 15\ntimeout_minutes: 60\n"
+        "log_tail_lines: 50\n",
+        "    ",
+    )
+    path = _write(tmp_path, "config.yaml", BASE_CONFIG.format(run_block=run_block))
+    config = Config.load(path)
+    assert config.log_tail_lines == 50
+
+
 def test_config_load_status_file_defaults_when_neither_key_present(
     tmp_path: Path,
 ) -> None:

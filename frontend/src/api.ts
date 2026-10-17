@@ -81,6 +81,11 @@ export interface Job {
   /** Which repo the job ran against; null for rows recorded before one
    *  shared database held every workspace. */
   repo: string | null;
+  /** The agent's most recent run-log output, refreshed on the same poll
+   *  tick as status. Null until the first tick after launch. Kept fresh
+   *  via the `job_log` SSE event rather than a `GET /jobs` refetch -- see
+   *  useJobStream. */
+  log_tail: string | null;
 }
 
 export interface Run {
@@ -216,6 +221,14 @@ export async function fetchSamples(sandboxName: string): Promise<Sample[]> {
   return (await request<{ samples: Sample[] }>(path)).samples;
 }
 
+/** An on-demand deeper log tail, read straight from the sandbox -- more
+ *  than the `log_tail` already on the Job from the live stream. */
+export async function fetchJobLog(sandboxName: string, tail?: number): Promise<string> {
+  const query = tail !== undefined ? `?tail=${tail}` : "";
+  const path = `/jobs/${encodeURIComponent(sandboxName)}/log${query}`;
+  return (await request<{ sandbox_name: string; tail: string }>(path)).tail;
+}
+
 export async function fetchSandboxes(): Promise<SandboxSummary[]> {
   return (await request<{ sandboxes: SandboxSummary[] }>("/sandboxes")).sandboxes;
 }
@@ -237,6 +250,17 @@ export async function answerJob(
   );
 }
 
+/** Restarts a stopped or dead job. Runs in the background on the server;
+ *  the real status arrives over the SSE stream, not in this response. */
+export async function respawnJob(
+  sandboxName: string,
+): Promise<{ status: string; sandbox_name: string }> {
+  return request<{ status: string; sandbox_name: string }>(
+    `/jobs/${encodeURIComponent(sandboxName)}/respawn`,
+    { method: "POST" },
+  );
+}
+
 export async function pingSandbox(sandboxName: string): Promise<PingResult> {
   return request<PingResult>(
     `/sandboxes/${encodeURIComponent(sandboxName)}/ping`,
@@ -244,12 +268,26 @@ export async function pingSandbox(sandboxName: string): Promise<PingResult> {
   );
 }
 
+/** Stops a sandbox's container without removing it -- its filesystem and
+ *  git history survive, so `respawnJob` can restart it later. */
+export async function stopSandbox(
+  sandboxName: string,
+): Promise<{ stopped: string }> {
+  return request<{ stopped: string }>(
+    `/sandboxes/${encodeURIComponent(sandboxName)}/stop`,
+    { method: "POST" },
+  );
+}
+
+/** Removes one sandbox. Refused (ApiError, status 409) when its branch has
+ *  commits that exist only in that sandbox, unless `force` is set. */
 export async function removeSandbox(
   sandboxName: string,
+  force = false,
 ): Promise<{ removed: string[] }> {
   return request<{ removed: string[] }>(
     `/sandboxes/${encodeURIComponent(sandboxName)}/rm`,
-    { method: "POST" },
+    { method: "POST", body: JSON.stringify({ force }) },
   );
 }
 

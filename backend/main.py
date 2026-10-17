@@ -10,8 +10,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from backend.api.routes import register_routes
-from backend.api.runner import recover_in_flight_jobs, stop_sampler
-from backend.api.settings import load_config
+from backend.api.runner import reattach_in_flight_jobs, stop_sampler
+from backend.api.settings import load_config, load_features
 from backend.logging import configure_logging
 
 if TYPE_CHECKING:
@@ -32,16 +32,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     Runs outlive the request that started them and survive a browser
     disconnect, but not a process exit -- so on startup every job still
-    marked running is checked against the live sandbox listing and marked
-    lost when its sandbox is gone. Without this it would sit "running"
-    forever in the UI. `uvicorn --reload` restarts on every code change, so
-    this path runs constantly in development.
+    marked running or queued is checked against the live sandbox listing:
+    marked lost when its sandbox is gone, resubmitted to resume polling
+    when it survived. Without this a dead sandbox's job would sit
+    "running" forever in the UI, and a live one would sit "running" with
+    nothing watching it either. `uvicorn --reload` restarts on every code
+    change, so this path runs constantly in development.
 
     A missing or malformed config must not stop the app booting: the UI
     still has to come up in order to *show* that preflight failed.
     """
     with suppress(FileNotFoundError, KeyError):
-        recover_in_flight_jobs(load_config())
+        config = load_config()
+        reattach_in_flight_jobs(config, load_features())
     try:
         yield
     finally:

@@ -45,6 +45,43 @@ describe("useJobStream", () => {
     await waitFor(() => expect(result.current.jobs).toHaveLength(3));
   });
 
+  it("merges a job_log event into the matching job without a full refetch", async () => {
+    // job_log fires on every poll tick for every running job; reconciling
+    // the whole board that often would hammer the API during a multi-job
+    // run, so this must be a local merge, not a trigger for refresh().
+    const fetchMock = vi.fn().mockResolvedValue(jobsResponse(2));
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useJobStream());
+    await waitFor(() => expect(result.current.jobs).toHaveLength(2));
+    const callsBefore = fetchMock.mock.calls.length;
+
+    act(() =>
+      MockEventSource.last?.emit("job_log", {
+        sandbox_name: "box-0",
+        tail: "building...\ndone.",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(result.current.jobs.find((j) => j.sandbox_name === "box-0")?.log_tail).toBe(
+        "building...\ndone.",
+      ),
+    );
+    expect(result.current.jobs.find((j) => j.sandbox_name === "box-1")?.log_tail).toBeUndefined();
+    expect(fetchMock.mock.calls.length).toBe(callsBefore);
+  });
+
+  it("ignores a job_log event for a job it doesn't know about", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jobsResponse(1)));
+    const { result } = renderHook(() => useJobStream());
+    await waitFor(() => expect(result.current.jobs).toHaveLength(1));
+
+    act(() => MockEventSource.last?.emit("job_log", { sandbox_name: "unknown", tail: "x" }));
+
+    expect(result.current.jobs).toHaveLength(1);
+    expect(result.current.jobs[0]?.log_tail).toBeUndefined();
+  });
+
   it("reconciles over HTTP on every connect, not only the first", async () => {
     // This is what makes closing the laptop lid safe: even if replay is
     // unavailable, a reconnect converges on the truth.

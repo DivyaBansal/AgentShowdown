@@ -81,6 +81,19 @@ describe("SandboxControls", () => {
     render(<SandboxControls sandboxes={[]} onChanged={() => {}} />);
     expect(screen.getByText(/no sandboxes are running/i)).toBeInTheDocument();
   });
+
+  it("removes a sandbox with no unpushed commits in one step", async () => {
+    const onChanged = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ removed: ["arena-f1-claude"] }) }),
+    );
+    render(<SandboxControls sandboxes={sandboxes} onChanged={onChanged} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
 });
 
 describe("SandboxControls failure paths", () => {
@@ -165,5 +178,50 @@ describe("SandboxControls failure paths", () => {
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent(/daemon gone/i),
     );
+  });
+
+  it("offers to remove anyway when the sandbox has commits unique to it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        statusText: "Conflict",
+        json: async () => ({
+          detail: "'arena-f1-claude' has 3 commit(s) ... Pass force to delete anyway.",
+        }),
+      }),
+    );
+    render(<SandboxControls sandboxes={sandboxes} onChanged={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/3 commit/i));
+    expect(screen.getByRole("button", { name: /remove anyway/i })).toBeInTheDocument();
+  });
+
+  it("removes anyway once the conflict is confirmed, passing force", async () => {
+    const onChanged = vi.fn();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        statusText: "Conflict",
+        json: async () => ({ detail: "3 commit(s) ... Pass force to delete anyway." }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ removed: ["arena-f1-claude"] }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SandboxControls sandboxes={sandboxes} onChanged={onChanged} />);
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => screen.getByRole("button", { name: /remove anyway/i }));
+
+    fireEvent.click(screen.getByRole("button", { name: /remove anyway/i }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    const secondBody = JSON.parse(
+      String((fetchMock.mock.calls[1]?.[1] as RequestInit | undefined)?.body),
+    );
+    expect(secondBody).toEqual({ force: true });
   });
 });

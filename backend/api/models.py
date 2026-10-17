@@ -100,6 +100,28 @@ class JobQuery(BaseModel):
     repo: str | None = Field(default=None, max_length=4096)
 
 
+class LogQuery(BaseModel):
+    """Query params for ``GET /jobs/{sandbox_name}/log``.
+
+    The stored `log_tail` column (refreshed every poll tick, up to
+    `Config.log_tail_lines`) is enough for a live glance; this endpoint is
+    for pulling a deeper on-demand tail straight from the sandbox, up to
+    `tail` lines.
+    """
+
+    tail: int = Field(default=200, ge=1, le=2000)
+
+
+class RemoveSandboxRequest(BaseModel):
+    """Confirms removing one sandbox.
+
+    `force` overrides the unpushed-commit safeguard in
+    `sandboxes.remove` -- see there for what it checks.
+    """
+
+    force: bool = False
+
+
 class KillAllRequest(BaseModel):
     """Confirmation for the host-wide sandbox wipe.
 

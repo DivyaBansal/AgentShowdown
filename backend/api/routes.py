@@ -20,12 +20,14 @@ from backend.api.models import (
     AnswerRequest,
     JobQuery,
     KillAllRequest,
+    LogQuery,
+    RemoveSandboxRequest,
     StartRunRequest,
 )
 from backend.api.preflight import preflight
 from backend.api.routes_integrations import register_integration_routes
 from backend.api.routes_setup import register_setup_routes
-from backend.api.runner import RunConflictError, start_run
+from backend.api.runner import RunConflictError, start_respawn, start_run
 from backend.api.settings import load_config, load_features
 from backend.api.stream import event_stream, parse_last_event_id
 from backend.logging import log
@@ -38,8 +40,10 @@ from backend.orchestrator.job import resume_job
 from backend.orchestrator.process import CommandError
 from backend.orchestrator.sbx import (
     AGENT_CLI_BUILDERS,
+    AGENT_LOG_PATH,
     SKIP_PERMISSIONS_IGNORED,
     sbx_list,
+    sbx_tail_log,
 )
 from backend.orchestrator.state import StateStore
 
@@ -181,6 +185,17 @@ def register_routes(app: FastAPI) -> None:  # noqa: PLR0915 -- one call per rout
         with StateStore(_config().state_db_path) as store:
             return {"samples": store.get_samples(sandbox_name)}
 
+    @app.get("/jobs/{sandbox_name}/log")
+    def get_log(sandbox_name: str, query: Annotated[LogQuery, Depends()]) -> dict[str, object]:
+        """An on-demand deeper log tail, read straight from the sandbox.
+
+        Returns "" rather than 404 when the sandbox is gone or the log
+        doesn't exist yet -- same leniency as `/samples`, since "nothing to
+        show yet" and "never existed" look the same from here.
+        """
+        tail = sbx_tail_log(sandbox_name, AGENT_LOG_PATH, query.tail)
+        return {"sandbox_name": sandbox_name, "tail": tail}
+
     @app.post("/jobs/{sandbox_name}/answer")
     def answer_job(sandbox_name: str, request: AnswerRequest) -> dict[str, str]:
         """Answers an agent that stopped to ask, and resumes it.
@@ -196,6 +211,25 @@ def register_routes(app: FastAPI) -> None:  # noqa: PLR0915 -- one call per rout
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"status": "resumed", "sandbox_name": sandbox_name}
 
+    @app.post("/jobs/{sandbox_name}/respawn", status_code=202)
+    def respawn_job(sandbox_name: str) -> dict[str, str]:
+        """Restarts a stopped or dead job, and returns immediately.
+
+        Unlike `/answer`, this runs in the background (see `start_respawn`):
+        restarting a stopped sandbox or relaunching a fresh one can take as
+        long as the agent's own startup, which has no reason to hold the
+        request open.
+        """
+        config = _config()
+        try:
+            start_respawn(config, load_features(), sandbox_name)
+        except RunConflictError as exc:
+            log.warning("respawn_rejected_conflict", detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except CommandError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"status": "respawning", "sandbox_name": sandbox_name}
+
     @app.get("/sandboxes")
     def list_sandboxes() -> dict[str, object]:
         return {"sandboxes": list(sbx_list().values())}
@@ -204,9 +238,30 @@ def register_routes(app: FastAPI) -> None:  # noqa: PLR0915 -- one call per rout
     def ping_sandbox(sandbox_name: str) -> dict[str, object]:
         return sandbox_ops.ping(sandbox_name, _config().status_file)
 
+    @app.post("/sandboxes/{sandbox_name}/stop")
+    def stop_sandbox(sandbox_name: str) -> dict[str, object]:
+        """Stops a sandbox's container without removing it (see `respawn`)."""
+        try:
+            return sandbox_ops.stop(sandbox_name, _config().state_db_path)
+        except CommandError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.post("/sandboxes/{sandbox_name}/rm")
-    def remove_sandbox(sandbox_name: str) -> dict[str, object]:
-        return sandbox_ops.remove(sandbox_name, _config().state_db_path)
+    def remove_sandbox(
+        sandbox_name: str, request: RemoveSandboxRequest | None = None
+    ) -> dict[str, object]:
+        config = _config()
+        force = request.force if request is not None else False
+        try:
+            return sandbox_ops.remove(
+                sandbox_name,
+                config.state_db_path,
+                config.repo_path,
+                config.base_branch,
+                force=force,
+            )
+        except CommandError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/sandboxes/kill-all")
     def kill_all_sandboxes(request: KillAllRequest) -> dict[str, object]:

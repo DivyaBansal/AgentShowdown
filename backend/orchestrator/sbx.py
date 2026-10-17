@@ -637,6 +637,71 @@ def sbx_read_status(sandbox_name: str, status_file: str) -> dict | None:
         }
 
 
+def sbx_read_status_and_tail(
+    sandbox_name: str, status_file: str, log_path: str, tail_lines: int
+) -> tuple[dict | None, str]:
+    """Reads the agent's status file and a tail of its run log in one exec.
+
+    Used by the periodic polling tier in `job.poll_until_signal`, which
+    reads both on the same cadence -- combining them keeps that tier at one
+    `sbx exec` per tick instead of two, the same reasoning
+    `_extract_before_teardown` uses for the teardown read.
+
+    Args:
+        sandbox_name: Sandbox to read from.
+        status_file: Workspace-relative path to the status file.
+        log_path: Path *inside the sandbox* to the agent's run log.
+        tail_lines: How many trailing lines of the log to read.
+
+    Returns:
+        (status, tail). `status` has the same shape as `sbx_read_status`'s
+        return value: None if the status file doesn't exist yet, a dict
+        with `state`/`message` on valid JSON, or `state: "unknown"` on
+        malformed content. `tail` is "" if the log doesn't exist yet.
+    """
+    marker = "---agentshowdown-tail---"
+    result = sbx_exec_capture(
+        sandbox_name,
+        f"cat {shlex.quote(status_file)} 2>/dev/null; echo {marker}; "
+        f"tail -n {tail_lines} {shlex.quote(log_path)} 2>/dev/null",
+        login_shell=False,
+    )
+    status_text, _, tail_text = result.stdout.partition(marker)
+    status_text = status_text.strip()
+    status: dict | None = None
+    if status_text:
+        try:
+            status = json.loads(status_text)
+        except json.JSONDecodeError:
+            status = {
+                "state": "unknown",
+                "message": f"invalid JSON in status file: {status_text[:500]!r}",
+            }
+    return status, tail_text.lstrip("\n")
+
+
+def sbx_tail_log(sandbox_name: str, log_path: str, tail_lines: int) -> str:
+    """Reads the trailing lines of a sandbox's run log on demand.
+
+    Standalone counterpart to the tail half of `sbx_read_status_and_tail`,
+    for a caller that wants a deeper on-demand look (e.g. the `/log`
+    endpoint) without also reading the status file.
+
+    Args:
+        sandbox_name: Sandbox to read from.
+        log_path: Path *inside the sandbox* to the agent's run log.
+        tail_lines: How many trailing lines to read.
+
+    Returns:
+        The tail text, or "" if the log doesn't exist (yet, or the sandbox
+        is gone) -- never raises.
+    """
+    result = sbx_exec_capture(
+        sandbox_name, f"tail -n {tail_lines} {shlex.quote(log_path)} 2>/dev/null", login_shell=False
+    )
+    return result.stdout
+
+
 def sbx_rm(sandbox_name: str) -> None:
     """Removes a sandbox, ignoring errors (e.g. already removed).
 
@@ -646,3 +711,40 @@ def sbx_rm(sandbox_name: str) -> None:
     hangs the calling thread forever instead of failing.
     """
     run(["sbx", "rm", "--force", sandbox_name], options=RunOptions(check=False))
+
+
+def sbx_stop(sandbox_name: str) -> None:
+    """Stops a sandbox's container without removing it.
+
+    Per `sbx stop --help`: "Stopped sandboxes retain their state and can be
+    restarted with sbx run" -- the filesystem, git history and any
+    uncommitted work survive. `sbx_restart_detached` is the other half of
+    this pair.
+    """
+    run(["sbx", "stop", sandbox_name], options=RunOptions(check=False))
+
+
+def sbx_restart_detached(sandbox_name: str, agent: str) -> None:
+    """Restarts a stopped local sandbox's container, without launching the agent.
+
+    Equivalent to: sbx run <agent> --name <sandbox_name> --detached
+
+    Mirrors `sbx_create_detached`'s split-then-launch structure, and for
+    the same reason documented there: relying on `sbx run --detached` to
+    actually start the agent process itself is not reliable (verified
+    against sbx v0.38.0 for the fresh-create case; untested for restart,
+    so this plays it safe the same way). This call only brings the
+    container back to "running" -- `sbx_launch_agent` does the real work
+    afterward, exactly as it does after a fresh `sbx_create_detached`.
+
+    Args:
+        sandbox_name: The stopped sandbox to restart (must already exist).
+        agent: The sbx agent kit it was created with. `sbx run`'s agent
+            positional is optional for a named sandbox that already exists
+            (sbx reads it from the sandbox's own spec), but passing it
+            explicitly avoids relying on that inference.
+    """
+    run(
+        ["sbx", "run", agent, "--name", sandbox_name, "--detached"],
+        options=RunOptions(capture=False),
+    )

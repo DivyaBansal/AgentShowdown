@@ -60,6 +60,7 @@ _MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("output_tokens", "ALTER TABLE jobs ADD COLUMN output_tokens INTEGER"),
     ("num_turns", "ALTER TABLE jobs ADD COLUMN num_turns INTEGER"),
     ("repo", "ALTER TABLE jobs ADD COLUMN repo TEXT"),
+    ("log_tail", "ALTER TABLE jobs ADD COLUMN log_tail TEXT"),
 )
 
 # One fully static statement -- no identifier is ever interpolated into SQL.
@@ -245,6 +246,33 @@ class StateStore:
             status=merged["status"],
             changed=sorted(fields),
         )
+
+    def update_log_tail(self, sandbox_name: str, tail: str) -> None:
+        """Records a sandbox's latest log tail, without publishing `job_changed`.
+
+        Deliberately bypasses `upsert`: the tail refreshes on every poll
+        tick regardless of whether anything else about the job changed, and
+        routing that through the same "something changed, refetch
+        everything" signal the UI uses for status transitions would turn a
+        live tail into a full job-list refetch storm. A caller that wants
+        subscribers notified publishes its own event instead -- see
+        `orchestrator.job.poll_until_signal`'s `job_log` event, which
+        mirrors how sample publishing works for telemetry (`add_sample`
+        below doesn't publish either).
+
+        `log_tail` is intentionally absent from `_WRITABLE_COLUMNS`: this
+        is the only path that ever writes it, so it stays untouched by
+        every other `upsert` call instead of being reset to NULL by one.
+
+        Args:
+            sandbox_name: Job to update. A silent no-op if unknown -- the
+                log tail is best-effort and must never fail a poll tick.
+            tail: The new tail text.
+        """
+        with self.conn:
+            self.conn.execute(
+                "UPDATE jobs SET log_tail = ? WHERE sandbox_name = ?", (tail, sandbox_name)
+            )
 
     def add_run(
         self, run_id: str, *, feature_id: str, created_at: str, mode: str, status: str

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Job } from "../api";
 import {
+  canRespawn,
+  canStop,
   compareNullableAscending,
   formatDiff,
   formatDuration,
@@ -35,6 +37,7 @@ function job(overrides: Partial<Job> = {}): Job {
     output_tokens: null,
     num_turns: null,
     repo: null,
+    log_tail: null,
     ...overrides,
   };
 }
@@ -107,5 +110,34 @@ describe("statusTone", () => {
     expect(statusTone("running")).toBe("active");
     expect(statusTone("timed_out")).toBe("danger");
     expect(statusTone("something-new")).toBe("neutral");
+  });
+
+  it("gives a deliberately stopped job a neutral tone, not a failure one", () => {
+    expect(statusTone("stopped")).toBe("neutral");
+  });
+});
+
+describe("canStop", () => {
+  it("allows stopping only a job that's actually doing something", () => {
+    expect(canStop("running")).toBe(true);
+    expect(canStop("queued")).toBe(true);
+    expect(canStop("stopped")).toBe(false);
+    expect(canStop("succeeded")).toBe(false);
+    expect(canStop("crashed")).toBe(false);
+  });
+});
+
+describe("canRespawn", () => {
+  it("allows respawning a stopped or dead job, not a live or finished one", () => {
+    expect(canRespawn("stopped")).toBe(true);
+    expect(canRespawn("crashed")).toBe(true);
+    expect(canRespawn("timed_out")).toBe(true);
+    expect(canRespawn("running")).toBe(false);
+    expect(canRespawn("queued")).toBe(false);
+    expect(canRespawn("succeeded")).toBe(false);
+  });
+
+  it("excludes awaiting_input -- that needs an answer, not a bare restart", () => {
+    expect(canRespawn("awaiting_input")).toBe(false);
   });
 });

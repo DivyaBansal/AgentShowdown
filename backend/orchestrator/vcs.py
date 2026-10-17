@@ -77,6 +77,40 @@ def diff_numstat(repo_path: str, base_branch: str, ref: str) -> str:
     return result.stdout if result.returncode == 0 else ""
 
 
+def unpushed_commit_count(repo_path: str, base_branch: str, branch: str, sandbox_name: str) -> int:
+    """How many commits on a sandbox's branch exist nowhere but that sandbox.
+
+    `_finalize_success` is the only code path that ever pushes a branch,
+    and it only runs on the way to "succeeded" -- so for a job in any other
+    status, every commit counted here is unique to the sandbox. Used to
+    decide whether removing a sandbox needs confirmation.
+
+    A fetch failure (sandbox already gone, no network) is treated as
+    "can't tell", 0, rather than blocking the delete -- this is a safety
+    net, not a hard gate.
+
+    Args:
+        repo_path: Host repo holding both refs.
+        base_branch: The branch's base (e.g. "main").
+        branch: Branch name to measure.
+        sandbox_name: Sandbox whose copy of the branch to check.
+
+    Returns:
+        The number of commits unique to the sandbox's branch.
+    """
+    fetched = git(repo_path, "fetch", f"sandbox-{sandbox_name}", check=False)
+    if fetched.returncode != 0:
+        return 0
+    ref = sandbox_ref(sandbox_name, branch)
+    result = git(repo_path, "rev-list", "--count", f"origin/{base_branch}..{ref}", check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        return 0
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return 0
+
+
 def run_in_worktree(repo_path: str, ref: str, command: str) -> subprocess.CompletedProcess:
     """Runs a shell command against `ref` in a throwaway worktree.
 

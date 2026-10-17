@@ -6,9 +6,11 @@ Closing the browser -- or losing the connection -- cannot stop a run,
 because nothing about its progress depends on anyone watching. State lives
 in SQLite and the orchestrator's own worker pool does the rest.
 
-Restarts are handled by `recover_in_flight_jobs`: on startup, any job still
-marked running is reconciled against the live sandbox listing, so a job
-whose sandbox is gone is marked lost instead of sitting "running" forever.
+Restarts are handled by `reattach_in_flight_jobs`: on startup, any job still
+marked running or queued is checked against the live sandbox listing. A job
+whose sandbox is gone is marked lost; one whose sandbox survived has nothing
+watching it anymore (the thread that was polling it died with the old
+process), so it's resubmitted to resume polling instead.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import threading
+import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
@@ -23,7 +26,15 @@ from typing import TYPE_CHECKING
 from backend.logging import log
 from backend.orchestrator.config import AgentSpec
 from backend.orchestrator.events import bus
-from backend.orchestrator.job import expand_jobs, run_all, sandbox_name_for
+from backend.orchestrator.job import (
+    expand_jobs,
+    find_spec_for_sandbox,
+    plan_respawn,
+    reattach_job,
+    respawn_job,
+    run_all,
+    sandbox_name_for,
+)
 from backend.orchestrator.process import CommandError
 from backend.orchestrator.sbx import sbx_list
 from backend.orchestrator.state import StateStore
@@ -299,6 +310,44 @@ def _execute_run(
         bus.publish("run_finished", run_id=run_id)
 
 
+def start_respawn(config: Config, features: dict[str, Feature], sandbox_name: str) -> None:
+    """Validates a respawn request, claims the sandbox, and runs it in the background.
+
+    Mirrors `start_run`'s "validate synchronously, execute in the
+    background" shape: a bad request (unknown job, still live, already
+    succeeded) fails immediately with no side effect, rather than queuing
+    work that would just fail later.
+
+    Args:
+        config: Orchestrator config.
+        features: Loaded features, keyed by id.
+        sandbox_name: The job to respawn.
+
+    Raises:
+        CommandError: If the job can't be respawned right now -- see
+            `job.plan_respawn`.
+        RunConflictError: If a live run already owns this sandbox name.
+    """
+    feature, spec, in_place = plan_respawn(config, features, sandbox_name)
+    _claim({sandbox_name: f"respawn:{sandbox_name}"})
+    log.info("job_respawn_requested", sandbox_name=sandbox_name, in_place=in_place)
+    _dispatcher.submit(_execute_respawn, config, feature, spec, sandbox_name, in_place=in_place)
+
+
+def _execute_respawn(
+    config: Config, feature: Feature, spec: AgentSpec, sandbox_name: str, *, in_place: bool
+) -> None:
+    """Runs a validated respawn, releasing its claim when done either way."""
+    try:
+        respawn_job(config, feature, spec, sandbox_name, in_place=in_place)
+    except Exception:  # noqa: BLE001 -- must not kill the dispatcher
+        with StateStore(config.state_db_path) as store:
+            store.upsert(sandbox_name, status="error", detail=traceback.format_exc()[-2000:])
+        log.error("job_respawn_failed", exc_info=True)
+    finally:
+        _release([sandbox_name])
+
+
 def start_sampler(config: Config) -> bool:
     """Starts telemetry sampling for the duration of a run, if enabled.
 
@@ -346,35 +395,90 @@ def stop_sampler() -> None:
             _holder.current = None
 
 
-def recover_in_flight_jobs(config: Config) -> int:
+def _reattach_one(
+    config: Config,
+    feature: Feature,
+    spec: AgentSpec,
+    sandbox_name: str,
+    slots: threading.BoundedSemaphore,
+) -> None:
+    """Resumes watching one job whose sandbox survived a restart."""
+    try:
+        with slots:
+            reattach_job(config, feature, spec, sandbox_name)
+    except Exception:  # noqa: BLE001 -- must not kill the dispatcher
+        with StateStore(config.state_db_path) as store:
+            store.upsert(sandbox_name, status="error", detail=traceback.format_exc()[-2000:])
+        log.error("job_reattach_failed", exc_info=True)
+    finally:
+        _release([sandbox_name])
+
+
+def reattach_in_flight_jobs(config: Config, features: dict[str, Feature]) -> tuple[int, int]:
     """Reconciles jobs left mid-flight by a previous process.
 
-    A job recorded as running whose sandbox no longer exists cannot make
-    progress and would otherwise sit "running" forever in the UI. Its
-    sandbox being alive is the only evidence the work survived, so that is
-    what gets checked. `uvicorn --reload` restarts on every code change, so
-    this runs constantly in development.
+    Two outcomes per in-flight job, depending on whether its sandbox
+    survived the restart:
+
+    - Gone: nothing can make progress on it, so it's marked "lost" (the
+      same behavior this had before reattachment existed).
+    - Alive: nothing is watching it anymore -- the thread that was polling
+      it died with the old process -- so it's resubmitted to resume
+      polling, without relaunching the agent, which is presumably still
+      running inside.
+
+    `uvicorn --reload` restarts on every code change, so this runs
+    constantly in development.
 
     Args:
         config: Orchestrator config.
+        features: Loaded features, keyed by id, needed to reconstruct the
+            (Feature, AgentSpec) pair a reattached job resumes under.
 
     Returns:
-        How many jobs were reconciled to "lost".
+        (lost_count, reattached_count).
     """
     live = set(sbx_list())
-    reconciled = 0
+    lost = 0
+    reattached = 0
+    slots = _job_slots(config)
     with StateStore(config.state_db_path) as store:
         for job in store.all_jobs():
             if job["status"] not in ("queued", "running"):
                 continue
-            if job["sandbox_name"] in live:
+            sandbox_name = job["sandbox_name"]
+            if sandbox_name not in live:
+                store.upsert(
+                    sandbox_name,
+                    status="lost",
+                    detail="sandbox was gone when the server restarted",
+                )
+                lost += 1
                 continue
-            store.upsert(
-                job["sandbox_name"],
-                status="lost",
-                detail="sandbox was gone when the server restarted",
-            )
-            reconciled += 1
-    if reconciled:
-        log.warning("in_flight_jobs_reconciled", count=reconciled)
-    return reconciled
+
+            feature = features.get(job["feature_id"])
+            if feature is None:
+                log.warning(
+                    "reattach_skipped_unknown_feature",
+                    sandbox_name=sandbox_name,
+                    feature_id=job["feature_id"],
+                )
+                continue
+            try:
+                spec = find_spec_for_sandbox(config, feature, sandbox_name)
+            except CommandError:
+                log.warning("reattach_skipped_unmatched_spec", sandbox_name=sandbox_name)
+                continue
+            try:
+                _claim({sandbox_name: "reattach-on-startup"})
+            except RunConflictError:
+                continue  # unreachable in practice at boot, but never double-watch one
+
+            reattached += 1
+            _dispatcher.submit(_reattach_one, config, feature, spec, sandbox_name, slots)
+
+    if lost:
+        log.warning("in_flight_jobs_marked_lost", count=lost)
+    if reattached:
+        log.warning("in_flight_jobs_reattached", count=reattached)
+    return lost, reattached

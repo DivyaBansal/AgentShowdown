@@ -243,6 +243,12 @@ class Config:
     # Adds the agent CLI's JSON output flag so token usage can be parsed
     # back out of the run log.
     capture_usage: bool = True
+    # How many trailing lines of the run log the periodic poll tier reads
+    # alongside the status file, for the live log tail shown while a job is
+    # still running. Read on the same cadence as the status file, in the
+    # same exec (see sbx.sbx_read_status_and_tail), so this adds no extra
+    # sandbox calls.
+    log_tail_lines: int = 200
     # Opening a PR is an outward-facing side effect on a real repo, so a UI
     # that can trigger runs must opt into it. The branch is still pushed.
     open_pr: bool = False
@@ -302,6 +308,7 @@ class Config:
             telemetry_interval_seconds=raw["run"].get("telemetry_interval_seconds", 5),
             verify_on=_validated_verify_on(raw["run"].get("verify_on", "host")),
             capture_usage=raw["run"].get("capture_usage", True),
+            log_tail_lines=raw["run"].get("log_tail_lines", 200),
             open_pr=raw["github"].get("open_pr", False),
             state_db_path=raw.get("state_db_path", "./orchestrator_state.sqlite3"),
             agent_profiles=agent_profiles,

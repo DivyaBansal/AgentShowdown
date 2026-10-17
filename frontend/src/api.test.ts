@@ -4,6 +4,7 @@ import {
   answerJob,
   fetchAgents,
   fetchFeatures,
+  fetchJobLog,
   fetchPreflight,
   fetchRun,
   fetchRuns,
@@ -13,7 +14,9 @@ import {
   openEventStream,
   pingSandbox,
   removeSandbox,
+  respawnJob,
   startRun,
+  stopSandbox,
 } from "./api";
 
 afterEach(() => vi.restoreAllMocks());
@@ -140,15 +143,60 @@ describe("endpoints unwrap their envelope", () => {
   });
 });
 
+describe("fetchJobLog", () => {
+  it("returns the tail text, unwrapped from the envelope", async () => {
+    vi.stubGlobal("fetch", ok({ sandbox_name: "box-1", tail: "building...\ndone." }));
+    await expect(fetchJobLog("box-1")).resolves.toBe("building...\ndone.");
+  });
+
+  it("omits the query string when no tail length is given", async () => {
+    const fetchMock = ok({ sandbox_name: "box-1", tail: "" });
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchJobLog("box-1");
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/jobs/box-1/log");
+  });
+
+  it("passes a custom tail length through as a query param", async () => {
+    const fetchMock = ok({ sandbox_name: "box-1", tail: "" });
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchJobLog("box-1", 50);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/jobs/box-1/log?tail=50");
+  });
+});
+
 describe("mutations", () => {
   it("pings a sandbox", async () => {
     vi.stubGlobal("fetch", ok({ sandbox_name: "box-1", reachable: true }));
     await expect(pingSandbox("box-1")).resolves.toMatchObject({ reachable: true });
   });
 
-  it("removes one sandbox", async () => {
-    vi.stubGlobal("fetch", ok({ removed: ["box-1"] }));
+  it("removes one sandbox, defaulting force to false", async () => {
+    const fetchMock = ok({ removed: ["box-1"] });
+    vi.stubGlobal("fetch", fetchMock);
     await expect(removeSandbox("box-1")).resolves.toEqual({ removed: ["box-1"] });
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(JSON.parse(String(init?.body))).toEqual({ force: false });
+  });
+
+  it("removes a sandbox with force when the safeguard should be bypassed", async () => {
+    const fetchMock = ok({ removed: ["box-1"] });
+    vi.stubGlobal("fetch", fetchMock);
+    await removeSandbox("box-1", true);
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(JSON.parse(String(init?.body))).toEqual({ force: true });
+  });
+
+  it("stops a sandbox", async () => {
+    vi.stubGlobal("fetch", ok({ stopped: "box-1" }));
+    await expect(stopSandbox("box-1")).resolves.toEqual({ stopped: "box-1" });
+  });
+
+  it("respawns a job", async () => {
+    vi.stubGlobal("fetch", ok({ status: "respawning", sandbox_name: "box-1" }));
+    await expect(respawnJob("box-1")).resolves.toEqual({
+      status: "respawning",
+      sandbox_name: "box-1",
+    });
   });
 
   it("sends the exact confirmation phrase when wiping every sandbox", async () => {

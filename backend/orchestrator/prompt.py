@@ -57,6 +57,28 @@ Instructions:
 """
 
 
+def build_continue_prompt(status_file: str) -> str:
+    """Builds the follow-up prompt used to restart a stopped job in place.
+
+    Unlike `build_resume_prompt`, there is no human answer to relay -- the
+    sandbox was simply paused (via `sbx stop`) and is being restarted to
+    continue from exactly where it left off, with no new input.
+
+    Args:
+        status_file: Workspace-relative path the agent must write its
+            status JSON to.
+
+    Returns:
+        The prompt string, to be passed alongside --continue/--resume.
+    """
+    return f"""Continue implementing the feature from exactly where you left off.
+
+When you are next completely finished (or if you become permanently stuck),
+update "{status_file}" following the same status-file contract as before
+(overwrite it with a fresh {{"state": ..., "message": ...}} JSON object).
+"""
+
+
 def build_resume_prompt(human_answer: str, status_file: str) -> str:
     """Builds the follow-up prompt used to resume a stuck agent.
 

@@ -18,6 +18,19 @@ export function statusTone(status: string): Tone {
   return "neutral";
 }
 
+/** Whether a job's sandbox can be stopped without losing its work --
+ *  i.e. it's actually doing something right now. */
+export function canStop(status: string): boolean {
+  return status === "running" || status === "queued";
+}
+
+/** Whether a job can be restarted: deliberately stopped, or dead in a way
+ *  that isn't "finished" (succeeded) or "needs an answer" (awaiting_input,
+ *  handled by replying instead). */
+export function canRespawn(status: string): boolean {
+  return status === "stopped" || FAILED.has(status);
+}
+
 /** Lower is better. Finished beats in-flight beats failed. */
 function outcomeRank(status: string): number {
   if (status === "succeeded") return 0;

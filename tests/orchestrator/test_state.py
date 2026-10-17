@@ -297,6 +297,64 @@ def test_all_jobs_filters_by_repo(tmp_path: Path) -> None:
         assert len(store.all_jobs()) == 3
 
 
+def test_update_log_tail_sets_the_column(tmp_path: Path) -> None:
+    with StateStore(str(tmp_path / "state.sqlite3")) as store:
+        store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b1", status="running")
+        store.update_log_tail("box-1", "building...\ndone.")
+
+        job = store.get("box-1")
+
+    assert job is not None
+    assert job["log_tail"] == "building...\ndone."
+
+
+def test_update_log_tail_does_not_publish_job_changed(tmp_path: Path) -> None:
+    """Unlike `upsert`, a tail refresh must not trigger a full board reconcile.
+
+    The tail updates on every poll tick regardless of whether the job's
+    status moved, so folding it into the same event every other field write
+    uses would turn a live tail into a job-list refetch storm.
+    """
+    with StateStore(str(tmp_path / "state.sqlite3")) as store:
+        store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b1", status="running")
+
+        received = []
+        unsubscribe = state.bus.subscribe(received.append)
+        try:
+            store.update_log_tail("box-1", "some output")
+        finally:
+            unsubscribe()
+
+        assert received == []
+
+
+def test_update_log_tail_on_unknown_sandbox_is_a_silent_no_op(tmp_path: Path) -> None:
+    with StateStore(str(tmp_path / "state.sqlite3")) as store:
+        store.update_log_tail("nonexistent", "some output")  # must not raise
+        assert store.get("nonexistent") is None
+
+
+def test_update_log_tail_survives_a_legacy_database(tmp_path: Path) -> None:
+    """A pre-log-tail database must gain the column via migration."""
+    db = tmp_path / "legacy.sqlite3"
+    legacy = sqlite3.connect(db)
+    legacy.execute(_LEGACY_SCHEMA)
+    legacy.execute(
+        "INSERT INTO jobs (sandbox_name, feature_id, agent_id, status, "
+        "created_at, updated_at) VALUES ('old-box', 'f1', 'claude', "
+        "'running', '2026-08-24T18:16:57', '2026-08-24T18:19:51')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    with StateStore(str(db)) as store:
+        store.update_log_tail("old-box", "hello")
+        job = store.get("old-box")
+
+    assert job is not None
+    assert job["log_tail"] == "hello"
+
+
 def test_opens_a_database_in_a_directory_that_does_not_exist_yet(tmp_path: Path) -> None:
     """A fresh install has no ~/.agentshowdown, and sqlite3 will not make it.
 

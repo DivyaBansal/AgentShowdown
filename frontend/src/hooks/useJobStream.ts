@@ -77,6 +77,25 @@ export function useJobStream(): JobStream {
     const onChange = () => {
       if (mounted.current) reconcile();
     };
+    const onLog = (event: MessageEvent<string>) => {
+      if (!mounted.current) return;
+      // Merged in place rather than reconciled: this fires on every poll
+      // tick for every running job, and a full `fetchJobs()` that often
+      // would hammer the API during a multi-job run. The backend writes
+      // log_tail via a path that deliberately never publishes job_changed,
+      // for the same reason -- see StateStore.update_log_tail.
+      let payload: { sandbox_name?: unknown; tail?: unknown };
+      try {
+        payload = JSON.parse(event.data) as typeof payload;
+      } catch {
+        return; // malformed frame -- the next tick will self-correct
+      }
+      const { sandbox_name: sandboxName, tail } = payload;
+      if (typeof sandboxName !== "string" || typeof tail !== "string") return;
+      setJobs((prev) =>
+        prev.map((job) => (job.sandbox_name === sandboxName ? { ...job, log_tail: tail } : job)),
+      );
+    };
     const onError = () => {
       if (mounted.current) setConnected(false);
     };
@@ -84,6 +103,7 @@ export function useJobStream(): JobStream {
     source.addEventListener("open", onOpen);
     source.addEventListener("error", onError);
     source.addEventListener("job_changed", onChange);
+    source.addEventListener("job_log", onLog);
     source.addEventListener("run_started", onChange);
     source.addEventListener("run_finished", onChange);
     // The server could not replay far enough back; full refetch is the
@@ -95,6 +115,7 @@ export function useJobStream(): JobStream {
       source.removeEventListener("open", onOpen);
       source.removeEventListener("error", onError);
       source.removeEventListener("job_changed", onChange);
+      source.removeEventListener("job_log", onLog);
       source.removeEventListener("run_started", onChange);
       source.removeEventListener("run_finished", onChange);
       source.removeEventListener("resync", onChange);

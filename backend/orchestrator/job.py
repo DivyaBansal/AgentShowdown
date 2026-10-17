@@ -23,9 +23,10 @@ from backend.orchestrator.config import (
     uses_custom_model_endpoint,
     validate_model,
 )
+from backend.orchestrator.events import bus
 from backend.orchestrator.metrics import parse_diff_numstat, parse_usage
 from backend.orchestrator.process import CommandError
-from backend.orchestrator.prompt import build_prompt, build_resume_prompt
+from backend.orchestrator.prompt import build_continue_prompt, build_prompt, build_resume_prompt
 from backend.orchestrator.sbx import (
     AGENT_CLI_BUILDERS,
     AGENT_LOG_PATH,
@@ -34,6 +35,8 @@ from backend.orchestrator.sbx import (
     sbx_exists,
     sbx_launch_agent,
     sbx_read_status,
+    sbx_read_status_and_tail,
+    sbx_restart_detached,
     sbx_rm,
     sbx_status,
 )
@@ -196,7 +199,8 @@ def poll_until_signal(config: Config, store: StateStore, sandbox_name: str, dead
         deadline: time.monotonic() value to stop polling at.
 
     Returns:
-        One of: "done", "stuck", "awaiting_input", "crashed", "timed_out".
+        One of: "done", "stuck", "awaiting_input", "crashed", "timed_out",
+        "stopped".
     """
     next_status_read = 0.0
     consecutive_missing = 0
@@ -206,6 +210,14 @@ def poll_until_signal(config: Config, store: StateStore, sandbox_name: str, dead
         # `sbx ls --json` runs on the host and spawns nothing inside the
         # sandbox, so this can run often without costing the agent anything.
         container_status = sbx_status(sandbox_name)
+
+        if container_status == "stopped":
+            # A deliberate `sbx stop` (see sandboxes.stop), not a crash --
+            # exec-ing into a stopped container would just fail, so this is
+            # detected and returned immediately rather than falling through
+            # to the status-file read below.
+            store.upsert(sandbox_name, status="stopped", detail="sandbox stopped")
+            return "stopped"
 
         if container_status in CONTAINER_FAILURE_STATES:
             # The container is gone/dying -- see if the agent (or the
@@ -239,10 +251,23 @@ def poll_until_signal(config: Config, store: StateStore, sandbox_name: str, dead
         # --- expensive tier ---------------------------------------------
         # Reading the status file spawns a process inside the sandbox, so it
         # runs on its own slower cadence rather than every liveness tick.
+        # The log tail rides along in the same exec (see
+        # sbx_read_status_and_tail) so this tier still costs one process per
+        # tick, not two.
         now = time.monotonic()
         if now >= next_status_read:
             next_status_read = now + config.poll_interval_seconds
-            status = sbx_read_status(sandbox_name, config.status_file)
+            status, tail = sbx_read_status_and_tail(
+                sandbox_name, config.status_file, AGENT_LOG_PATH, config.log_tail_lines
+            )
+            # Written separately from the status/detail upsert below (and
+            # without publishing job_changed): the tail refreshes every
+            # tick regardless of whether the job's status actually moved,
+            # and reconciling the whole board that often would defeat the
+            # point of a live tail. Subscribers get it via the dedicated
+            # job_log event published right after.
+            store.update_log_tail(sandbox_name, tail)
+            bus.publish("job_log", sandbox_name=sandbox_name, tail=tail)
             if status is not None:
                 state = status.get("state")
                 message = status.get("message")
@@ -485,8 +510,10 @@ def _await_and_finalize(
     )
     log.info("job_finished", status=final_status)
 
-    if final_status == "awaiting_input":
-        # Sandbox must survive so `answer` can resume it.
+    if final_status in ("awaiting_input", "stopped"):
+        # Sandbox must survive: `answer` resumes an awaiting_input job,
+        # `respawn` restarts a stopped one -- either way there's nothing to
+        # finalize or tear down yet.
         return
 
     if final_status != "done":
@@ -688,6 +715,165 @@ def resume_job(
         feature=feature,
         agent_id=job["agent_id"],
         requested_branch=job["branch"],
+    )
+
+
+# Respawning a job in this state would either race whatever already has it
+# (queued/running), redo completed work (succeeded), or needs an answer
+# rather than a bare restart (awaiting_input) -- handled by resume_job
+# instead. Checked in plan_respawn, which decides against the DB status
+# only when the sandbox itself is gone (a live sandbox gets its own check).
+_NOT_RESPAWNABLE_WHEN_GONE = ("succeeded", "awaiting_input")
+
+
+def plan_respawn(
+    config: Config, features: dict[str, Feature], sandbox_name: str
+) -> tuple[Feature, AgentSpec, bool]:
+    """Validates a respawn request and decides in-place vs fresh relaunch.
+
+    Kept separate from the actual respawn so a caller (the HTTP layer) can
+    validate synchronously -- a bad request fails immediately with no side
+    effect, before any background work is claimed or dispatched, the same
+    way `expand_jobs` validates a run up front.
+
+    Args:
+        config: Orchestrator config.
+        features: Loaded features, keyed by id.
+        sandbox_name: The job to respawn.
+
+    Returns:
+        (feature, spec, in_place). `in_place` is True when the sandbox is
+        alive and stopped, meaning the agent should be resumed inside it
+        rather than relaunched from scratch.
+
+    Raises:
+        CommandError: If the job is unknown, its feature/spec can't be
+            found, it has a live sandbox that isn't stopped, it already
+            succeeded, or it's awaiting_input with no sandbox left to
+            answer.
+    """
+    store = StateStore(config.state_db_path)
+    job = store.get(sandbox_name)
+    if job is None:
+        raise CommandError(f"No known job '{sandbox_name}'.")
+    feature = features.get(job["feature_id"])
+    if feature is None:
+        raise CommandError(f"Feature '{job['feature_id']}' not found in the loaded features file.")
+    spec = find_spec_for_sandbox(config, feature, sandbox_name)
+
+    status = job["status"]
+    if sbx_exists(sandbox_name):
+        if status != "stopped":
+            raise CommandError(
+                f"Job '{sandbox_name}' is '{status}' with a live sandbox -- "
+                f"only a stopped sandbox can be restarted in place. Stop it "
+                f"first (or wait for it to reach a terminal state)."
+            )
+        return feature, spec, True
+
+    if status in _NOT_RESPAWNABLE_WHEN_GONE:
+        reason = (
+            "it already succeeded"
+            if status == "succeeded"
+            else "there's no question left to answer -- its sandbox is gone"
+        )
+        raise CommandError(
+            f"Job '{sandbox_name}' is '{status}' and {reason}. Give it a "
+            f"new run_label in features.yaml to run it again instead."
+        )
+    return feature, spec, False
+
+
+def _respawn_in_place(config: Config, feature: Feature, spec: AgentSpec, sandbox_name: str) -> None:
+    """Restarts a stopped sandbox's container and resumes its agent session.
+
+    The container's filesystem (git history, uncommitted work) survives a
+    stop, so this continues the agent's most recent session rather than
+    starting over -- the counterpart to `run_job`'s fresh-relaunch path.
+    """
+    store = StateStore(config.state_db_path)
+    profile = config.agent_profiles.get(spec.agent_id)
+    log.info("job_respawning_in_place")
+    sbx_restart_detached(sandbox_name, spec.agent_id)
+    sbx_launch_agent(
+        sandbox_name=sandbox_name,
+        agent_id=spec.agent_id,
+        prompt=build_continue_prompt(config.status_file),
+        config=config,
+        model_override=resolve_model(spec, profile, config),
+        skip_permissions_override=resolve_dangerously_skip_permissions(spec, profile, config),
+        command_override=spec.command,
+        resume=True,
+    )
+    started_monotonic = time.monotonic()
+    store.upsert(sandbox_name, status="running", detail=None, started_at=_utc_now())
+
+    _await_and_finalize(
+        config,
+        store,
+        sandbox_name,
+        started_monotonic,
+        feature=feature,
+        agent_id=spec.agent_id,
+        requested_branch=branch_for(feature.id, spec),
+    )
+
+
+def respawn_job(
+    config: Config, feature: Feature, spec: AgentSpec, sandbox_name: str, *, in_place: bool
+) -> None:
+    """Executes a respawn already validated by `plan_respawn`.
+
+    Args:
+        config: Orchestrator config.
+        feature: The feature being implemented, from `plan_respawn`.
+        spec: The agent spec to run it through, from `plan_respawn`.
+        sandbox_name: The job to respawn.
+        in_place: From `plan_respawn` -- True to restart the existing
+            sandbox and resume its session, False to relaunch fresh via
+            `run_job` (which already does this for a terminal-failed job
+            whose sandbox is gone).
+    """
+    if in_place:
+        _respawn_in_place(config, feature, spec, sandbox_name)
+    else:
+        run_job(config, feature, spec)
+
+
+def reattach_job(config: Config, feature: Feature, spec: AgentSpec, sandbox_name: str) -> None:
+    """Resumes watching a job whose sandbox survived a server restart.
+
+    Unlike `run_job`, this never (re)launches the agent -- the sandbox
+    already has one running, which is the whole premise here. It only
+    re-enters the poll/finalize loop a now-dead thread was running before
+    the process restarted.
+
+    The elapsed-time clock restarts from now rather than the job's
+    original `started_at`, so `duration_seconds` undercounts the time
+    before the restart and the timeout deadline resets too. Accepted as a
+    known limitation rather than solved here.
+
+    Args:
+        config: Orchestrator config.
+        feature: The feature the job is implementing.
+        spec: The agent spec it's running under.
+        sandbox_name: The job's sandbox (must already exist).
+    """
+    set_job_context(sandbox_name)
+    store = StateStore(config.state_db_path)
+    branch = branch_for(feature.id, spec)
+    log.info("job_reattaching_after_restart")
+    started_monotonic = time.monotonic()
+    store.upsert(sandbox_name, status="running")
+
+    _await_and_finalize(
+        config,
+        store,
+        sandbox_name,
+        started_monotonic,
+        feature=feature,
+        agent_id=spec.agent_id,
+        requested_branch=branch,
     )
 
 
