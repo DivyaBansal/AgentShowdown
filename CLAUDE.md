@@ -14,7 +14,7 @@ that violates it, so following it up front saves round trips.
    bodies too (it has no separate "strict" mode — this is the default
    behavior), so untyped code will fail the build, not just get flagged.
 3. **No bare `except:`, no `eval`/`exec` on external input, no
-   string-formatted SQL.** These are hard blocks in Bandit/Ruff `S` rules,
+   string-formatted SQL.** These are hard blocks in Ruff's `S` rules,
    not style suggestions — don't add `# noqa` to silence them without
    asking first.
 4. **All external input is validated via a Pydantic model at the

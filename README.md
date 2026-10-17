@@ -42,7 +42,8 @@ the failures. To force a completed job to run again, give it a new
 
 agentshowdown started as a Python-service starter template, and that
 toolchain is still the backbone: `uv` for envs/deps, `ruff` + `ty` for
-lint/types, `bandit` + `pip-audit` + `gitleaks` for security, `pytest` +
+lint/types (ruff's `S` rules double as SAST), `pip-audit` + `gitleaks`
+for security, `pytest` +
 `hypothesis` for tests, `structlog` for logging — all gated by a GitHub
 Actions pipeline. The house rules that keep it that way are in
 [CLAUDE.md](CLAUDE.md).
@@ -368,7 +369,7 @@ npm run test
 ```
 
 CI (`.github/workflows/ci.yml`) gates every push and PR on lint + types,
-security (`bandit` / `pip-audit` / `gitleaks`), `pytest` on Python 3.12 and
+security (`pip-audit` / `gitleaks`), `pytest` on Python 3.12 and
 3.13 with an 80% coverage floor, and the full frontend check (eslint, `tsc`,
 vitest, `npm audit`). On `main` it also builds the wheel and container image,
 emits a CycloneDX SBOM, and Trivy-scans the image.

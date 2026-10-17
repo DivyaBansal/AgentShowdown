@@ -33,7 +33,10 @@ jobs:
       - name: ty type check
         run: uv run ty check backend/
 
-  # ---------- Security: SAST, dependency audit, secrets ----------
+  # ---------- Security: dependency audit, secrets ----------
+  # SAST lives in the lint job: ruff's `S` ruleset (see pyproject) runs
+  # over the whole repo there. Bandit was a second scanner reporting the
+  # same findings, and it cannot read ruff's `# noqa` suppressions.
   security:
     runs-on: ubuntu-latest
     steps:
@@ -45,8 +48,6 @@ jobs:
           version: ${{ env.UV_VERSION }}
       - name: Install deps (locked)
         run: uv sync --frozen --all-groups
-      - name: Bandit full SAST pass
-        run: uv run bandit -r backend/ -c pyproject.toml
       - name: pip-audit (known CVEs in dependencies)
         run: uv run pip-audit
       - name: Secret scan
