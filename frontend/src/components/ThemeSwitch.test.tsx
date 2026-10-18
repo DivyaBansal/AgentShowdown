@@ -6,6 +6,7 @@ import { ThemeSwitch } from "./ThemeSwitch";
 
 function Harness({ initial }: { initial: ThemeChoice }) {
   const [value, setValue] = useState<ThemeChoice>(initial);
+
   return <ThemeSwitch value={value} onChange={setValue} />;
 }
 

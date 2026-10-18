@@ -8,7 +8,9 @@ function stubOk() {
     status: 200,
     json: async () => ({ stored: true, service: "github", method: "command" }),
   });
+
   vi.stubGlobal("fetch", mock);
+
   return mock;
 }
 
@@ -57,10 +59,12 @@ describe("SecretModal", () => {
     fireEvent.submit(screen.getByRole("button", { name: /store/i }).closest("form")!);
 
     await waitFor(() => expect(mock).toHaveBeenCalled());
+
     const body = JSON.parse(String(mock.mock.calls[0]?.[1]?.body)) as {
       service: string;
       command: string;
     };
+
     expect(body).toEqual({ service: "github", command: "gh auth token" });
   });
 

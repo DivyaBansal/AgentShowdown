@@ -26,6 +26,7 @@ export function IssueImporter({ repo, onImported }: { repo: string; onImported: 
   async function handleLoad() {
     setError(null);
     setBusy(true);
+
     try {
       const result = await fetchIssues(repo);
       setIssues(result.issues);
@@ -41,6 +42,7 @@ export function IssueImporter({ repo, onImported }: { repo: string; onImported: 
     setError(null);
     setStatus(null);
     setBusy(true);
+
     try {
       const result = await importIssues(selected);
       setStatus(`Imported ${result.imported} issue(s)`);

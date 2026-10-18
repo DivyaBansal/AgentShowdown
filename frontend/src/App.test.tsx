@@ -45,6 +45,7 @@ function stubApi(overrides: Record<string, unknown> = {}) {
     "/api/workspaces": { active: null, workspaces: [] },
     ...overrides,
   };
+
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
@@ -53,6 +54,7 @@ function stubApi(overrides: Record<string, unknown> = {}) {
       const key = Object.keys(routes)
         .filter((r) => url.startsWith(r))
         .sort((a, b) => b.length - a.length)[0];
+
       return Promise.resolve({
         ok: key !== undefined,
         status: key === undefined ? 404 : 200,

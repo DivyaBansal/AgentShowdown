@@ -49,6 +49,7 @@ describe("placements", () => {
       job({ sandbox_name: "fast-fail", status: "tests_failed", duration_seconds: 10 }),
       job({ sandbox_name: "slow-pass", status: "succeeded", duration_seconds: 300 }),
     ]);
+
     expect(rank.get("slow-pass")).toBe(1);
     expect(rank.get("fast-fail")).toBe(2);
   });
@@ -59,6 +60,7 @@ describe("placements", () => {
       job({ sandbox_name: "slow", tests_passed: 1, duration_seconds: 200 }),
       job({ sandbox_name: "quick", tests_passed: 1, duration_seconds: 50 }),
     ]);
+
     expect([rank.get("quick"), rank.get("slow"), rank.get("no-tests")]).toEqual([1, 2, 3]);
   });
 
@@ -67,6 +69,7 @@ describe("placements", () => {
       job({ sandbox_name: "a1", feature_id: "a" }),
       job({ sandbox_name: "b1", feature_id: "b" }),
     ]);
+
     expect(rank.get("a1")).toBe(1);
     expect(rank.get("b1")).toBe(1);
   });
@@ -76,6 +79,7 @@ describe("placements", () => {
       job({ sandbox_name: "unknown", duration_seconds: null }),
       job({ sandbox_name: "timed", duration_seconds: 500 }),
     ]);
+
     expect(rank.get("timed")).toBe(1);
     expect(rank.get("unknown")).toBe(2);
   });

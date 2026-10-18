@@ -23,6 +23,7 @@ import { Notice } from "./ui/Notice";
  *  only while a variable row is being typed into. */
 function forRequest(agent: AgentSpec, agents: AgentInfo[]): AgentSpec {
   const known = agents.find((a) => a.agent_id === agent.agent_id);
+
   return {
     ...agent,
     model: (known?.accepts_model ?? true) ? agent.model : null,
@@ -84,6 +85,7 @@ export function RunLauncher({
     setError(null);
     setStatus(null);
     setBusy(true);
+
     try {
       const result = await startRun({
         entries: rows.map((row) => ({
@@ -94,6 +96,7 @@ export function RunLauncher({
         verify_on: verifyOn,
         open_pr: openPr,
       });
+
       const count = result.run_ids.length;
       setStatus(`Started ${count} ${count === 1 ? "run" : "runs"}`);
       onLaunched();

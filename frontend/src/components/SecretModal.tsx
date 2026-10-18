@@ -42,6 +42,7 @@ export function SecretModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     firstField.current?.focus();
+
     return () => previous?.focus();
   }, []);
 
@@ -50,9 +51,11 @@ export function SecretModal({ onClose }: { onClose: () => void }) {
     setError(null);
     setBusy(true);
     const input: SecretInput = { service };
+
     if (method === "command") input.command = value;
     else if (method === "ref") input.ref = value;
     else input.token = value;
+
     try {
       await storeSecret(input);
       onClose();

@@ -45,6 +45,7 @@ const FEATURE: Feature = {
 };
 
 const NO_REPO: WorkspaceList = { active: null, workspaces: [] };
+
 const REPO: WorkspaceList = {
   active: "/repos/app",
   workspaces: [{ path: "/repos/app", origin_url: null, github_repo: null, cloned: false }],
@@ -56,12 +57,14 @@ function stubApi(config: unknown) {
     "/api/secrets": { available: true, secrets: [] },
     "/api/workspaces": NO_REPO,
   };
+
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
       const key = Object.keys(routes)
         .filter((r) => url.startsWith(r))
         .sort((a, b) => b.length - a.length)[0];
+
       return Promise.resolve({
         ok: key !== undefined,
         status: key === undefined ? 404 : 200,
@@ -77,6 +80,7 @@ function panel(name: string): HTMLDetailsElement {
 }
 
 beforeEach(() => vi.useRealTimers());
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("SetupView", () => {

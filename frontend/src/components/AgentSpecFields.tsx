@@ -63,6 +63,7 @@ export function AgentSpecFields({
       .then((result) => {
         if (!cancelled) setOllamaModels(result);
       });
+
     return () => {
       cancelled = true;
     };
@@ -70,6 +71,7 @@ export function AgentSpecFields({
 
   const suggestions = ollama ? (ollamaModels?.models ?? []) : (known?.known_models ?? []);
   let modelHint: string | undefined;
+
   if (ollama) {
     modelHint =
       ollamaModels === null || ollamaModels.available
@@ -122,9 +124,11 @@ export function AgentSpecFields({
     // check once the endpoint is gone. Either way, start the field over.
     const isKnown = agent.model !== null && (known?.known_models ?? []).includes(agent.model);
     const keepModel = agent.model !== null && (on ? !isKnown : isKnown);
+
     if (agent.model !== null && !keepModel) {
       dispatch({ type: "setAgentField", index, agentIndex, field: "model", value: "" });
     }
+
     dispatch({
       type: "setAgentEnv",
       index,
@@ -187,6 +191,7 @@ export function AgentSpecFields({
                   field: "model",
                   value: e.target.value,
                 });
+
                 // Background calls follow the chosen model, or they would
                 // ask Ollama for a claude model it doesn't serve.
                 if (ollama) {

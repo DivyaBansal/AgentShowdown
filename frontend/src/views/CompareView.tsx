@@ -30,6 +30,7 @@ import { StatusChip } from "../components/ui/StatusChip";
 function repoLabel(repo: string | null): string {
   if (!repo) return "unknown repo";
   const parts = repo.split("/").filter(Boolean);
+
   return parts[parts.length - 1] ?? repo;
 }
 
@@ -59,8 +60,10 @@ export function CompareView({
   useEffect(() => {
     if (selected === null) {
       setSamples([]);
+
       return;
     }
+
     fetchSamples(selected.sandbox_name).then(setSamples).catch(() => setSamples([]));
   }, [selected]);
 

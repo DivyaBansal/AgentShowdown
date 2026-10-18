@@ -62,6 +62,7 @@ export function WorkspacePicker({ onChanged }: { onChanged: () => void }) {
         .then((job) => {
           if (cancelled || job.state === "running") return;
           setCloneId(null);
+
           if (job.state === "finished") {
             setStatus(`Cloned into ${job.target_path}. Now in use.`);
             reload();
@@ -94,6 +95,7 @@ export function WorkspacePicker({ onChanged }: { onChanged: () => void }) {
     setStatus(null);
     setFound(null);
     setBusy(true);
+
     try {
       if (mode === "local") {
         setFound(await inspectWorkspace(path));
@@ -111,6 +113,7 @@ export function WorkspacePicker({ onChanged }: { onChanged: () => void }) {
 
   async function handleUse(target: string) {
     setError(null);
+
     try {
       await selectWorkspace(target);
       setStatus(`Using ${target}`);

@@ -45,6 +45,7 @@ export function assignSeriesColors(roster: Job[]): Map<string, string> {
   keys.forEach((key, index) => {
     colors.set(key, SERIES_VARS[index] ?? OVERFLOW_VAR);
   });
+
   return colors;
 }
 
@@ -58,5 +59,6 @@ export function assignSeriesColorsFor(
   roster: Job[],
 ): (job: Pick<Job, "agent_id" | "run_label">) => string {
   const colors = assignSeriesColors(roster);
+
   return (job) => colors.get(seriesKey(job)) ?? OVERFLOW_VAR;
 }

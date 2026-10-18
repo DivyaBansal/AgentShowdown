@@ -16,6 +16,7 @@ const OLLAMA_AUTH_TOKEN = "ollama";
 
 const BASE_URL_KEY = "ANTHROPIC_BASE_URL";
 const AUTH_TOKEN_KEY = "ANTHROPIC_AUTH_TOKEN";
+
 /** claude-code makes background calls with its "haiku" model; Ollama serves
  *  no such name, so those go to the chosen model too. */
 const HAIKU_MODEL_KEY = "ANTHROPIC_DEFAULT_HAIKU_MODEL";
@@ -41,11 +42,13 @@ export function withOllama(
     [BASE_URL_KEY]: OLLAMA_BASE_URL,
     [AUTH_TOKEN_KEY]: OLLAMA_AUTH_TOKEN,
   };
+
   if (model) {
     next[HAIKU_MODEL_KEY] = model;
   } else {
     delete next[HAIKU_MODEL_KEY];
   }
+
   return next;
 }
 

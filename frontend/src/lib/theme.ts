@@ -23,6 +23,7 @@ function isExplicit(value: unknown): value is "light" | "dark" {
 export function readStoredTheme(): ThemeChoice {
   try {
     const value = window.localStorage.getItem(THEME_STORAGE_KEY);
+
     return isExplicit(value) ? value : "system";
   } catch {
     // Storage can throw outright (blocked site data, some private modes).

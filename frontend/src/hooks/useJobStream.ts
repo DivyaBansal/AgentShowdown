@@ -55,6 +55,7 @@ export function useJobStream(): JobStream {
     reconcile();
 
     let source: EventSource;
+
     try {
       source = openEventStream();
     } catch {
@@ -74,9 +75,11 @@ export function useJobStream(): JobStream {
       // the gap when replay was unavailable.
       reconcile();
     };
+
     const onChange = () => {
       if (mounted.current) reconcile();
     };
+
     const onLog = (event: MessageEvent<string>) => {
       if (!mounted.current) return;
       // Merged in place rather than reconciled: this fires on every poll
@@ -85,17 +88,21 @@ export function useJobStream(): JobStream {
       // log_tail via a path that deliberately never publishes job_changed,
       // for the same reason -- see StateStore.update_log_tail.
       let payload: { sandbox_name?: unknown; tail?: unknown };
+
       try {
         payload = JSON.parse(event.data) as typeof payload;
       } catch {
         return; // malformed frame -- the next tick will self-correct
       }
+
       const { sandbox_name: sandboxName, tail } = payload;
+
       if (typeof sandboxName !== "string" || typeof tail !== "string") return;
       setJobs((prev) =>
         prev.map((job) => (job.sandbox_name === sandboxName ? { ...job, log_tail: tail } : job)),
       );
     };
+
     const onError = () => {
       if (mounted.current) setConnected(false);
     };

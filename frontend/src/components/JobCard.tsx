@@ -52,6 +52,7 @@ export function JobCard({
   async function handleStop() {
     setError(null);
     setPending(true);
+
     try {
       await stopSandbox(job.sandbox_name);
     } catch (err) {
@@ -64,6 +65,7 @@ export function JobCard({
   async function handleRespawn() {
     setError(null);
     setPending(true);
+
     try {
       await respawnJob(job.sandbox_name);
     } catch (err) {

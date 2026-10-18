@@ -18,6 +18,7 @@ describe("Field", () => {
         <input id="branch" />
       </Field>,
     );
+
     expect(screen.queryByText(/merged into/i)).not.toBeInTheDocument();
 
     rerender(

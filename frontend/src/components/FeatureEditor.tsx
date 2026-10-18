@@ -65,6 +65,7 @@ export function FeatureEditor({
     setError(null);
     setStatus(null);
     setBusy(true);
+
     try {
       const saved = await saveFeatures(withoutBlankEnvKeys(items));
       setStatus(`Saved ${saved.count} feature(s)`);

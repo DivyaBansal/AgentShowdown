@@ -29,6 +29,7 @@ export function App() {
   const [features, setFeatures] = useState<Feature[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sandboxes, setSandboxes] = useState<SandboxSummary[]>([]);
+
   const [workspaces, setWorkspaces] = useState<WorkspaceList>({
     active: null,
     workspaces: [],

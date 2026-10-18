@@ -43,6 +43,7 @@ const JOBS = [
 /** The agent name in each body row, top to bottom. */
 function agentOrder(): string[] {
   const [, body] = screen.getAllByRole("rowgroup");
+
   return within(body!)
     .getAllByRole("row")
     .map((row) => within(row).getAllByRole("cell")[1]!.textContent ?? "");

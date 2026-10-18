@@ -26,6 +26,7 @@ export function SecretsManager({
       setList(result);
       onSecretsChange?.(result);
     };
+
     fetchSecrets()
       .then(show)
       .catch(() => show({ available: false, secrets: [] }));

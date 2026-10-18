@@ -202,6 +202,7 @@ describe("SandboxControls failure paths", () => {
 
   it("removes anyway once the conflict is confirmed, passing force", async () => {
     const onChanged = vi.fn();
+
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({
@@ -211,6 +212,7 @@ describe("SandboxControls failure paths", () => {
         json: async () => ({ detail: "3 commit(s) ... Pass force to delete anyway." }),
       })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ removed: ["arena-f1-claude"] }) });
+
     vi.stubGlobal("fetch", fetchMock);
     render(<SandboxControls sandboxes={sandboxes} onChanged={onChanged} />);
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
@@ -219,9 +221,11 @@ describe("SandboxControls failure paths", () => {
     fireEvent.click(screen.getByRole("button", { name: /remove anyway/i }));
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
+
     const secondBody = JSON.parse(
       String((fetchMock.mock.calls[1]?.[1] as RequestInit | undefined)?.body),
     );
+
     expect(secondBody).toEqual({ force: true });
   });
 });

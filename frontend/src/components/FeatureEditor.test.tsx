@@ -41,7 +41,9 @@ function stubOk() {
     status: 200,
     json: async () => ({ count: 1, path: "/repos/app/.agentshowdown/features.yaml" }),
   });
+
   vi.stubGlobal("fetch", mock);
+
   return mock;
 }
 
@@ -114,10 +116,13 @@ describe("FeatureEditor", () => {
     // with a GET of its own -- so find the save among the calls.
     const saveCall = () =>
       mock.mock.calls.find((call) => (call[1] as RequestInit | undefined)?.body !== undefined);
+
     await waitFor(() => expect(saveCall()).toBeDefined());
+
     const body = JSON.parse(String((saveCall()?.[1] as RequestInit).body)) as {
       features: { id: string; agents: { env: Record<string, string> }[] }[];
     };
+
     expect(body.features[0]?.id).toBe("add-verbs");
     expect(body.features[0]?.agents[0]?.env).toEqual({
       ANTHROPIC_BASE_URL: "http://host.docker.internal:11434",

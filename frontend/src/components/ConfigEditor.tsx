@@ -69,6 +69,7 @@ export function ConfigEditor({
     values.run.verify_on === "host" &&
     values.run.test_command !== "" &&
     values.run.test_command !== originalTest;
+
   const blocked = hostVerifyChanged && confirm !== CONFIRM_PHRASE;
   const agent = agents.find((a) => a.agent_id === values.agent.sbx_agent);
 
@@ -82,10 +83,12 @@ export function ConfigEditor({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+
     if (!values || !doc) return;
     setError(null);
     setStatus(null);
     setBusy(true);
+
     try {
       const saved = await saveConfig(values);
       setStatus(`Saved to ${saved.path}`);

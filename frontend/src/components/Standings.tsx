@@ -41,11 +41,13 @@ const COLUMNS: Column[] = [
 
 function diffSize(job: Job): number | null {
   if (job.lines_added === null && job.lines_removed === null) return null;
+
   return (job.lines_added ?? 0) + (job.lines_removed ?? 0);
 }
 
 function verdict(value: number | null) {
   if (value === null) return <span className="no-data">—</span>;
+
   return value > 0 ? (
     <span className="verdict--pass">pass</span>
   ) : (
@@ -67,17 +69,23 @@ export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job
     tokens: totalTokens,
     diff: diffSize,
   };
+
   const rows = [...jobs].sort((a, b) => {
     const flip = descending ? -1 : 1;
+
     if (sortKey === "rank") {
       return flip * (a.feature_id.localeCompare(b.feature_id) || compareForPlacement(a, b));
     }
+
     if (sortKey === "agent") {
       return flip * seriesKey(a).localeCompare(seriesKey(b));
     }
+
     const va = metric[sortKey](a);
     const vb = metric[sortKey](b);
+
     if (va === null || vb === null) return compareNullableAscending(va, vb);
+
     return flip * (va - vb);
   });
 
@@ -120,6 +128,7 @@ export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job
           {rows.map((job) => {
             const place = rank.get(job.sandbox_name) ?? 0;
             const tokens = totalTokens(job);
+
             return (
               <tr key={job.sandbox_name}>
                 <td className={place === 1 ? "rank rank--first" : "rank"}>

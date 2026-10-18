@@ -20,14 +20,18 @@ import { StatusChip } from "../components/ui/StatusChip";
 
 function configStatus(doc: ConfigDoc | null): PanelStatus | undefined {
   if (doc === null) return undefined;
+
   if (!doc.editable) return { tone: "neutral", text: "read-only preset" };
+
   return doc.exists ? { tone: "ok", text: "saved" } : { tone: "warn", text: "not saved" };
 }
 
 function secretsStatus(list: SecretList | null): PanelStatus | undefined {
   if (list === null) return undefined;
+
   if (!list.available) return { tone: "warn", text: "sbx unavailable" };
   const n = list.secrets.length;
+
   return n === 0 ? { tone: "warn", text: "none stored" } : { tone: "ok", text: `${n} stored` };
 }
 
@@ -52,11 +56,13 @@ export function SetupView({
   }
 
   const active = workspaces.workspaces.find((w) => w.path === workspaces.active);
+
   const checks = [
     workspaces.active !== null,
     configDoc?.exists === true,
     features.length > 0,
   ];
+
   const ready = checks.filter(Boolean).length;
 
   return (

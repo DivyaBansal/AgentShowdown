@@ -60,6 +60,7 @@ describe("Panel", () => {
         <p>body</p>
       </Panel>,
     );
+
     rerender(
       <Panel title="Secrets" defaultOpen={false}>
         <p>body</p>

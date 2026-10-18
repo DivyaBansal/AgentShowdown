@@ -71,9 +71,11 @@ describe("ComparisonSpread", () => {
 
   it("describes each chart for assistive technology", () => {
     render(<ComparisonSpread jobs={[job()]} />);
+
     const durationChart = screen
       .getAllByRole("img")
       .find((c) => c.getAttribute("aria-label")?.includes("duration"));
+
     expect(durationChart?.getAttribute("aria-label")).toContain("claude");
   });
 

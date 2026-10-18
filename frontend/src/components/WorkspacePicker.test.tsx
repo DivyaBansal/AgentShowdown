@@ -22,7 +22,9 @@ function stub(routes: Record<string, { ok?: boolean; status?: number; body: unkn
       const key = Object.keys(routes)
         .filter((r) => url.startsWith(r))
         .sort((a, b) => b.length - a.length)[0];
+
       const route = key === undefined ? undefined : routes[key];
+
       return Promise.resolve({
         ok: route?.ok ?? key !== undefined,
         status: route?.status ?? (key === undefined ? 404 : 200),
@@ -155,6 +157,7 @@ describe("WorkspacePicker clone progress", () => {
       "fetch",
       vi.fn((url: string) => {
         let body: unknown = { active: null, workspaces: [] };
+
         if (url.includes("/clone/")) {
           polls += 1;
           body =
@@ -170,6 +173,7 @@ describe("WorkspacePicker clone progress", () => {
         } else if (url.endsWith("/workspaces/clone")) {
           body = { clone_id: "c1", state: "running", target_path: "/c/owner-app" };
         }
+
         return Promise.resolve({ ok: true, status: 200, statusText: "OK", json: async () => body });
       }),
     );

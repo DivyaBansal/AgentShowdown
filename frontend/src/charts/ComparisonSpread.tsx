@@ -54,6 +54,7 @@ const LABEL_W = 92;
 const VALUE_W = 52;
 const CHART_W = 320;
 const BAR_H = 18;
+
 // >= 2px of surface between adjacent bars; the gap is what separates them,
 // never a stroke drawn around the mark.
 const BAR_GAP = 10;
@@ -73,6 +74,7 @@ function MetricChart({
     value: metric.value(job),
     color: colors.get(seriesKey(job)) ?? "var(--de-emphasis)",
   }));
+
   const max = Math.max(...rows.map((r) => r.value ?? 0), 0);
   const plotW = CHART_W - LABEL_W - VALUE_W;
   const height = TOP_PAD * 2 + rows.length * (BAR_H + BAR_GAP);
@@ -104,6 +106,7 @@ function MetricChart({
         {rows.map((row, i) => {
           const y = TOP_PAD + i * (BAR_H + BAR_GAP);
           const width = max > 0 && row.value !== null ? (row.value / max) * plotW : 0;
+
           return (
             <g key={row.key}>
               <text
@@ -160,6 +163,7 @@ function MetricChart({
 /** A bar squared at the baseline and rounded (4px) at the data end. */
 function roundedBar(x: number, y: number, w: number, h: number): string {
   const r = Math.min(4, w);
+
   return [
     `M ${x} ${y}`,
     `H ${x + w - r}`,
@@ -179,6 +183,7 @@ export function ComparisonSpread({ jobs }: { jobs: Job[] }) {
       </p>
     );
   }
+
   const colors = assignSeriesColors(jobs);
 
   return (

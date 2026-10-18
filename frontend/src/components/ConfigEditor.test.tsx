@@ -47,9 +47,12 @@ function stub(doc: unknown = DOC, putOk = true) {
           putOk ? { path: DOC.path } : { detail: "The bundled demo preset is read-only" },
       });
     }
+
     return Promise.resolve({ ok: true, status: 200, json: async () => doc });
   });
+
   vi.stubGlobal("fetch", mock);
+
   return mock;
 }
 
@@ -83,6 +86,7 @@ describe("ConfigEditor", () => {
         run: { ...DOC.config.run, test_command: "bash tests/test_german_practice.sh" },
       },
     };
+
     const mock = stub(draft);
     render(<ConfigEditor reloadKey={0} />);
 
@@ -100,10 +104,12 @@ describe("ConfigEditor", () => {
     );
     await waitFor(() => expect(screen.getByRole("status")).toBeInTheDocument());
     const put = mock.mock.calls.find((c) => (c[1] as RequestInit)?.method === "PUT");
+
     const body = JSON.parse(String((put?.[1] as RequestInit).body)) as {
       agent: { model: string };
       run: { test_command: string; status_file: string };
     };
+
     expect(body.agent.model).toBe("");
     expect(body.run.test_command).toBe("");
     expect(body.run.status_file).toBe(".agent_status.json");
@@ -143,6 +149,7 @@ describe("ConfigEditor", () => {
 
   it("swaps the default model for the new agent's own when the agent changes", async () => {
     stub();
+
     const agent = {
       requires_command: false,
       accepts_model: true,
@@ -150,6 +157,7 @@ describe("ConfigEditor", () => {
       verified: true,
       reports_token_usage: true,
     };
+
     render(
       <ConfigEditor
         reloadKey={0}
@@ -209,9 +217,11 @@ describe("ConfigEditor", () => {
 
     await waitFor(() => expect(screen.getByRole("status")).toBeInTheDocument());
     const put = mock.mock.calls.find((c) => (c[1] as RequestInit)?.method === "PUT");
+
     const body = JSON.parse(String((put?.[1] as RequestInit).body)) as {
       github: { base_branch: string };
     };
+
     expect(body.github.base_branch).toBe("develop");
   });
 

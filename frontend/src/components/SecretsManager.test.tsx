@@ -5,12 +5,16 @@ import { SecretsManager } from "./SecretsManager";
 
 function stubSecrets(...responses: SecretList[]) {
   let call = 0;
+
   const mock = vi.fn(() => {
     const body = responses[Math.min(call, responses.length - 1)];
     call += 1;
+
     return Promise.resolve({ ok: true, status: 200, json: async () => body });
   });
+
   vi.stubGlobal("fetch", mock);
+
   return mock;
 }
 

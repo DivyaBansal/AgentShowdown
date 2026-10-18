@@ -36,6 +36,7 @@ export class MockEventSource {
   /** Dispatches an event of `type` to whatever the component registered. */
   emit(type: string, data: unknown = {}): void {
     const event = new MessageEvent(type, { data: JSON.stringify(data) });
+
     for (const listener of this.listeners.get(type) ?? []) {
       listener(event);
     }

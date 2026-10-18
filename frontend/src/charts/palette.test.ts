@@ -93,6 +93,7 @@ describe("assignSeriesColors", () => {
       job("d"),
       job("e"),
     ]);
+
     expect(colors.get("d")).toBe(OVERFLOW_VAR);
     expect(colors.get("e")).toBe(OVERFLOW_VAR);
   });

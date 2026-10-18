@@ -83,11 +83,13 @@ function launcher(overrides: { disabled?: boolean; onLaunched?: () => void } = {
 function okFetch(body: unknown) {
   const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => body });
   vi.stubGlobal("fetch", fetchMock);
+
   return fetchMock;
 }
 
 function sentBody(fetchMock: ReturnType<typeof vi.fn>) {
   const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+
   return JSON.parse(String(init?.body)) as {
     entries: { feature_id: string; agents: { agent_id: string; model: string | null }[] }[];
   };
@@ -154,10 +156,12 @@ describe("RunLauncher", () => {
     });
 
     const [first, ...rest] = features;
+
     const saved: Feature[] = [
       { ...first!, agents: [{ ...first!.agents[0]!, model: "claude-sonnet-4-5" }] },
       ...rest,
     ];
+
     rerender(
       <RunLauncher features={saved} agents={agents} disabled={false} onLaunched={() => {}} />,
     );

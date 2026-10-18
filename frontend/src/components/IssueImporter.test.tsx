@@ -18,13 +18,16 @@ function stub(issues = ISSUES, importOk = true) {
           importOk ? { imported: 1 } : { detail: "gh is not installed or not on PATH" },
       });
     }
+
     return Promise.resolve({
       ok: true,
       status: 200,
       json: async () => ({ repo: "owner/app", issues }),
     });
   });
+
   vi.stubGlobal("fetch", mock);
+
   return mock;
 }
 

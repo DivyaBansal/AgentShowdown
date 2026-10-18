@@ -26,6 +26,7 @@ describe("featuresReducer", () => {
   it("replaces one feature, leaving its neighbours alone", () => {
     // How the launcher fills a row with the chosen feature's own agents.
     const state = [...withOneFeature(), emptyFeature()];
+
     const replacement: FeatureInput = {
       id: "f2",
       description: "",
@@ -164,14 +165,17 @@ describe("featuresReducer", () => {
   it("carries saved feature changes into untouched rows but keeps edited ones", () => {
     const haiku = { ...emptyAgent(), model: "claude-haiku-4-5" };
     const sonnet = { ...emptyAgent(), model: "claude-sonnet-4-5" };
+
     const previous: FeatureInput[] = [
       { id: "f1", description: "", acceptance_criteria: [], agents: [haiku] },
       { id: "f2", description: "", acceptance_criteria: [], agents: [haiku] },
     ];
+
     const next: FeatureInput[] = [
       { id: "f1", description: "", acceptance_criteria: [], agents: [sonnet] },
       { id: "f2", description: "", acceptance_criteria: [], agents: [sonnet] },
     ];
+
     const rows: FeatureInput[] = [
       { id: "f1", description: "", acceptance_criteria: [], agents: [haiku] },
       { id: "f2", description: "", acceptance_criteria: [], agents: [{ ...haiku, run_label: "mine" }] },

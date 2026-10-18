@@ -57,6 +57,7 @@ function fields(agent: Partial<AgentSpec> = {}) {
       dispatch={dispatch}
     />,
   );
+
   return dispatch;
 }
 
@@ -178,12 +179,14 @@ describe("AgentSpecFields", () => {
       fields({ agent_id: "claude", model: "qwen3.5:122b", env: ollamaEnv });
 
       expect(screen.getByRole("checkbox", { name: /local ollama model/i })).toBeChecked();
+
       // Datalist options carry only a value, so they have no accessible
       // name to query by; read the values of every option role instead.
       const optionValues = () =>
         screen
           .getAllByRole("option", { hidden: true })
           .map((option) => (option as HTMLOptionElement).value);
+
       await waitFor(() => expect(optionValues()).toContain("gemma4:31b"));
       expect(optionValues()).not.toContain("claude-sonnet-5");
       expect(screen.getByText(/models pulled into this machine's ollama/i)).toBeInTheDocument();
@@ -213,6 +216,7 @@ describe("AgentSpecFields", () => {
 
     it("removes only its own variables and the Ollama model when switched off", () => {
       stubOllama({ available: true, models: [] });
+
       const dispatch = fields({
         agent_id: "claude",
         model: "qwen3.5:122b",

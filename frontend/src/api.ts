@@ -158,36 +158,45 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // Built conditionally rather than spreading an `undefined` header:
   // exactOptionalPropertyTypes treats an explicit undefined as a real value.
   const options: RequestInit = { ...init };
+
   if (init?.body !== undefined) {
     options.headers = { "Content-Type": "application/json" };
   }
+
   const controller = new AbortController();
   options.signal = controller.signal;
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   let res: Response;
+
   try {
     res = await fetch(`/api${path}`, options);
   } catch (err) {
     if (controller.signal.aborted) {
       throw new ApiError(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`, 0);
     }
+
     throw err;
   } finally {
     clearTimeout(timer);
   }
+
   if (!res.ok) {
     // FastAPI puts the useful part in `detail`; fall back to the status text
     // so a proxy error or a 502 still says something.
     let detail = res.statusText;
+
     try {
       const body = (await res.json()) as { detail?: unknown };
+
       if (typeof body.detail === "string") detail = body.detail;
     } catch {
       // Non-JSON error body -- statusText is the best we have.
     }
+
     throw new ApiError(detail, res.status);
   }
+
   return (await res.json()) as T;
 }
 
@@ -224,11 +233,13 @@ export async function fetchRun(runId: string): Promise<{ run: Run; jobs: Job[] }
 
 export async function fetchJobs(repo?: string): Promise<Job[]> {
   const query = repo ? `?repo=${encodeURIComponent(repo)}` : "";
+
   return (await request<{ jobs: Job[] }>(`/jobs${query}`)).jobs;
 }
 
 export async function fetchSamples(sandboxName: string): Promise<Sample[]> {
   const path = `/jobs/${encodeURIComponent(sandboxName)}/samples`;
+
   return (await request<{ samples: Sample[] }>(path)).samples;
 }
 
@@ -237,6 +248,7 @@ export async function fetchSamples(sandboxName: string): Promise<Sample[]> {
 export async function fetchJobLog(sandboxName: string, tail?: number): Promise<string> {
   const query = tail !== undefined ? `?tail=${tail}` : "";
   const path = `/jobs/${encodeURIComponent(sandboxName)}/log${query}`;
+
   return (await request<{ sandbox_name: string; tail: string }>(path)).tail;
 }
 
@@ -483,9 +495,11 @@ export function cloneRepo(url: string, directoryName?: string): Promise<CloneSta
   // Built conditionally rather than spread: exactOptionalPropertyTypes means
   // an explicit `undefined` is a real value and would fail validation.
   const body: { url: string; directory_name?: string } = { url };
+
   if (directoryName !== undefined && directoryName !== "") {
     body.directory_name = directoryName;
   }
+
   return request<CloneStatus>("/workspaces/clone", {
     method: "POST",
     body: JSON.stringify(body),
@@ -531,6 +545,7 @@ export function storeSecret(input: SecretInput): Promise<{ service: string; meth
 
 export function fetchIssues(repo?: string): Promise<{ repo: string; issues: GithubIssue[] }> {
   const query = repo ? `?repo=${encodeURIComponent(repo)}` : "";
+
   return request<{ repo: string; issues: GithubIssue[] }>(`/github/issues${query}`);
 }
 

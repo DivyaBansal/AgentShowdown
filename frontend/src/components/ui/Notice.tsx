@@ -10,6 +10,7 @@ export type NoticeTone = "neutral" | "ok" | "warn" | "danger";
 
 export function Notice({ tone, children }: { tone: NoticeTone; children: ReactNode }) {
   const role = tone === "danger" || tone === "warn" ? "alert" : "status";
+
   return (
     <div role={role} className={`notice notice--${tone}`}>
       {children}

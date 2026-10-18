@@ -114,6 +114,7 @@ describe("request handling", () => {
       name: "ApiError",
       status: 0,
     });
+
     await vi.advanceTimersByTimeAsync(20_000);
     await pending;
 
