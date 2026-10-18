@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type Json, type Routes } from "../test/fetch";
 import type { Feature, WorkspaceList } from "../api";
 import { SetupView } from "./SetupView";
 
@@ -44,32 +45,32 @@ const FEATURE: Feature = {
   agents: [],
 };
 
-const NO_REPO: WorkspaceList = { active: null, workspaces: [] };
+const NO_REPO = { active: null, workspaces: [] } satisfies WorkspaceList;
 
 const REPO: WorkspaceList = {
   active: "/repos/app",
   workspaces: [{ path: "/repos/app", origin_url: null, github_repo: null, cloned: false }],
 };
 
-function stubApi(config: unknown) {
-  const routes: Record<string, unknown> = {
+function stubApi(config: Json) {
+  const routes = {
     "/api/config": config,
     "/api/secrets": { available: true, secrets: [] },
     "/api/workspaces": NO_REPO,
-  };
+  } satisfies Routes;
 
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
-      const key = Object.keys(routes)
-        .filter((r) => url.startsWith(r))
-        .sort((a, b) => b.length - a.length)[0];
+      const match = Object.entries(routes)
+        .filter(([prefix]) => url.startsWith(prefix))
+        .sort(([a], [b]) => b.length - a.length)[0];
 
       return Promise.resolve({
-        ok: key !== undefined,
-        status: key === undefined ? 404 : 200,
+        ok: match !== undefined,
+        status: match === undefined ? 404 : 200,
         statusText: "Not Found",
-        json: async () => routes[key ?? ""] ?? {},
+        json: async () => match?.[1] ?? {},
       });
     }),
   );

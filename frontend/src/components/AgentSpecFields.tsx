@@ -328,7 +328,7 @@ export function AgentSpecFields({
                   value={key}
                   placeholder="NAME"
                   onChange={(e) => {
-                    const next: [string, string][] = [...envPairs] as [string, string][];
+                    const next = [...envPairs];
                     next[i] = [e.target.value, value];
                     setEnv(next);
                   }}
@@ -339,7 +339,7 @@ export function AgentSpecFields({
                   value={value}
                   placeholder="value"
                   onChange={(e) => {
-                    const next: [string, string][] = [...envPairs] as [string, string][];
+                    const next = [...envPairs];
                     next[i] = [key, e.target.value];
                     setEnv(next);
                   }}
@@ -347,7 +347,7 @@ export function AgentSpecFields({
                 <button
                   type="button"
                   className="btn--quiet"
-                  onClick={() => setEnv(envPairs.filter((_, j) => j !== i) as [string, string][])}
+                  onClick={() => setEnv(envPairs.filter((_, j) => j !== i))}
                 >
                   Remove
                 </button>
@@ -356,7 +356,7 @@ export function AgentSpecFields({
             <div className="actions">
               <button
                 type="button"
-                onClick={() => setEnv([...(envPairs as [string, string][]), ["", ""]])}
+                onClick={() => setEnv([...envPairs, ["", ""]])}
               >
                 Add variable
               </button>

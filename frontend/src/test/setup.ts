@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import type { Json } from "./fetch";
 
 /** jsdom ships no EventSource, so the SSE hook would throw on import.
  *
@@ -34,7 +35,7 @@ export class MockEventSource {
   }
 
   /** Dispatches an event of `type` to whatever the component registered. */
-  emit(type: string, data: unknown = {}): void {
+  emit(type: string, data: Json = {}): void {
     const event = new MessageEvent(type, { data: JSON.stringify(data) });
 
     for (const listener of this.listeners.get(type) ?? []) {

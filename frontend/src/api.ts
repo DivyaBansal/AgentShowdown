@@ -30,6 +30,9 @@ export interface AgentInfo {
   reports_token_usage: boolean;
 }
 
+/** Environment variables passed to an agent's sandbox (`sbx create -e`). */
+export type EnvVars = Record<string, string>;
+
 export interface AgentSpec {
   agent_id: string;
   run_label: string | null;
@@ -42,7 +45,7 @@ export interface AgentSpec {
   provider?: string | null;
   /** Baked into the sandbox as `sbx create -e`. This is how an agent is
    *  pointed at a local Ollama or a gateway. */
-  env?: Record<string, string>;
+  env?: EnvVars;
 }
 
 export interface Feature {
@@ -131,11 +134,19 @@ export interface StartRunRequest {
   /** Each entry becomes its own run; they execute concurrently. */
   entries: RunEntry[];
   telemetry?: boolean;
-  verify_on?: "host" | "sandbox";
+  verify_on?: VerifyOn;
   open_pr?: boolean;
   poll_interval_seconds?: number;
   cpus?: number;
   memory?: string;
+}
+
+/** Where the test/lint commands run after an agent finishes. */
+export type VerifyOn = "host" | "sandbox";
+
+/** Reads a `<select>` value back into a `VerifyOn`; anything unexpected is `host`. */
+export function parseVerifyOn(value: string): VerifyOn {
+  return value === "sandbox" ? "sandbox" : "host";
 }
 
 export class ApiError extends Error {
@@ -187,9 +198,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let detail = res.statusText;
 
     try {
-      const body = (await res.json()) as { detail?: unknown };
+      const body = await res.json();
 
-      if (typeof body.detail === "string") detail = body.detail;
+      if (hasStringDetail(body)) detail = body.detail;
     } catch {
       // Non-JSON error body -- statusText is the best we have.
     }
@@ -197,7 +208,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(detail, res.status);
   }
 
+  // SAFETY: T is the response model the caller names for this path, and the
+  // interfaces in this file mirror the backend's Pydantic models. Nothing
+  // here re-validates it; a mismatch is a contract bug between the two.
   return (await res.json()) as T;
+}
+
+/** FastAPI's `HTTPException` body is `{"detail": "<message>"}`. Validation
+ *  errors put a list there instead, which this deliberately rejects. */
+function hasStringDetail(body: unknown): body is { detail: string } {
+  return (
+    typeof body === "object" && body !== null && "detail" in body && typeof body.detail === "string"
+  );
 }
 
 export async function fetchPreflight(): Promise<Preflight> {
@@ -393,7 +415,7 @@ export interface RunConfig {
   poll_interval_seconds: number;
   timeout_minutes: number;
   max_concurrency: number;
-  verify_on: "host" | "sandbox";
+  verify_on: VerifyOn;
   test_command: string;
   lint_command: string;
   telemetry: boolean;
@@ -408,7 +430,7 @@ export interface AgentProfile {
   provider: string | null;
   dangerously_skip_permissions: boolean | null;
   kit: string[];
-  env: Record<string, string>;
+  env: EnvVars;
 }
 
 export interface ConfigValues {
@@ -491,10 +513,15 @@ export function selectWorkspace(path: string): Promise<WorkspaceEntry> {
   });
 }
 
+interface CloneRequest {
+  url: string;
+  directory_name?: string;
+}
+
 export function cloneRepo(url: string, directoryName?: string): Promise<CloneStatus> {
   // Built conditionally rather than spread: exactOptionalPropertyTypes means
   // an explicit `undefined` is a real value and would fail validation.
-  const body: { url: string; directory_name?: string } = { url };
+  const body: CloneRequest = { url };
 
   if (directoryName !== undefined && directoryName !== "") {
     body.directory_name = directoryName;

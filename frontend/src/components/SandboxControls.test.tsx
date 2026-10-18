@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { fetchInit, jsonBody } from "../test/fetch";
 import { SandboxControls } from "./SandboxControls";
 
 afterEach(() => vi.restoreAllMocks());
@@ -222,10 +223,6 @@ describe("SandboxControls failure paths", () => {
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
 
-    const secondBody = JSON.parse(
-      String((fetchMock.mock.calls[1]?.[1] as RequestInit | undefined)?.body),
-    );
-
-    expect(secondBody).toEqual({ force: true });
+    expect(jsonBody(fetchInit(fetchMock, 1))).toEqual({ force: true });
   });
 });

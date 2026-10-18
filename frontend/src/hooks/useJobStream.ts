@@ -28,6 +28,23 @@ export interface JobStream {
   refresh: () => void;
 }
 
+/** A `job_log` SSE frame: the latest log tail for one sandbox. */
+interface LogTailEvent {
+  sandbox_name: string;
+  tail: string;
+}
+
+function isLogTailEvent(payload: unknown): payload is LogTailEvent {
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    "sandbox_name" in payload &&
+    typeof payload.sandbox_name === "string" &&
+    "tail" in payload &&
+    typeof payload.tail === "string"
+  );
+}
+
 export function useJobStream(): JobStream {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [connected, setConnected] = useState(false);
@@ -43,9 +60,9 @@ export function useJobStream(): JobStream {
           setError(null);
         }
       })
-      .catch((err: unknown) => {
+      .catch((cause: unknown) => {
         if (mounted.current) {
-          setError(err instanceof Error ? err.message : "Could not load jobs");
+          setError(cause instanceof Error ? cause.message : "Could not load jobs");
         }
       });
   }, []);
@@ -87,17 +104,18 @@ export function useJobStream(): JobStream {
       // would hammer the API during a multi-job run. The backend writes
       // log_tail via a path that deliberately never publishes job_changed,
       // for the same reason -- see StateStore.update_log_tail.
-      let payload: { sandbox_name?: unknown; tail?: unknown };
+      let payload;
 
       try {
-        payload = JSON.parse(event.data) as typeof payload;
+        payload = JSON.parse(event.data);
       } catch {
         return; // malformed frame -- the next tick will self-correct
       }
 
+      if (!isLogTailEvent(payload)) return;
+
       const { sandbox_name: sandboxName, tail } = payload;
 
-      if (typeof sandboxName !== "string" || typeof tail !== "string") return;
       setJobs((prev) =>
         prev.map((job) => (job.sandbox_name === sandboxName ? { ...job, log_tail: tail } : job)),
       );

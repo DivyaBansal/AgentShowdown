@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { type Routes } from "./test/fetch";
 import { App } from "./App";
 import { MockEventSource } from "./test/setup";
 
@@ -35,8 +36,8 @@ const JOB = {
 };
 
 /** Routes each endpoint the app loads on mount. */
-function stubApi(overrides: Record<string, unknown> = {}) {
-  const routes: Record<string, unknown> = {
+function stubApi(overrides: Routes = {}) {
+  const routes = {
     "/api/preflight": PREFLIGHT_OK,
     "/api/features": { features: [] },
     "/api/agents": { agents: [] },
@@ -44,22 +45,22 @@ function stubApi(overrides: Record<string, unknown> = {}) {
     "/api/jobs": { jobs: [JOB] },
     "/api/workspaces": { active: null, workspaces: [] },
     ...overrides,
-  };
+  } satisfies Routes;
 
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
       // Longest prefix wins: "/api/features/meta" must not be answered by
       // the "/api/features" stub just because it was declared first.
-      const key = Object.keys(routes)
-        .filter((r) => url.startsWith(r))
-        .sort((a, b) => b.length - a.length)[0];
+      const match = Object.entries(routes)
+        .filter(([prefix]) => url.startsWith(prefix))
+        .sort(([a], [b]) => b.length - a.length)[0];
 
       return Promise.resolve({
-        ok: key !== undefined,
-        status: key === undefined ? 404 : 200,
+        ok: match !== undefined,
+        status: match === undefined ? 404 : 200,
         statusText: "Not Found",
-        json: async () => routes[key ?? ""] ?? {},
+        json: async () => match?.[1] ?? {},
       });
     }),
   );

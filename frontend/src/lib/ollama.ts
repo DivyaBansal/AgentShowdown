@@ -1,3 +1,5 @@
+import type { EnvVars } from "../api";
+
 /** Pointing the claude agent at the host's Ollama, as a preset of env vars.
  *
  * Nothing here is new capability: the backend already routes an agent to a
@@ -28,16 +30,16 @@ export function supportsOllamaPreset(agentId: string): boolean {
   return agentId === "claude";
 }
 
-export function usesOllama(env: Record<string, string> | undefined): boolean {
+export function usesOllama(env: EnvVars | undefined): boolean {
   return env?.[BASE_URL_KEY] === OLLAMA_BASE_URL;
 }
 
 /** `env` with the Ollama variables set, keeping any others the user added. */
 export function withOllama(
-  env: Record<string, string> | undefined,
+  env: EnvVars | undefined,
   model: string | null,
-): Record<string, string> {
-  const next: Record<string, string> = {
+): EnvVars {
+  const next: EnvVars = {
     ...env,
     [BASE_URL_KEY]: OLLAMA_BASE_URL,
     [AUTH_TOKEN_KEY]: OLLAMA_AUTH_TOKEN,
@@ -53,7 +55,7 @@ export function withOllama(
 }
 
 /** `env` with the Ollama variables removed, keeping any others. */
-export function withoutOllama(env: Record<string, string> | undefined): Record<string, string> {
+export function withoutOllama(env: EnvVars | undefined): EnvVars {
   return Object.fromEntries(
     Object.entries(env ?? {}).filter(([key]) => !OLLAMA_KEYS.includes(key)),
   );

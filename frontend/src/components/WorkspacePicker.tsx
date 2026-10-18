@@ -85,8 +85,8 @@ export function WorkspacePicker({ onChanged }: { onChanged: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cloneId]);
 
-  function fail(err: unknown, fallback: string) {
-    setError(err instanceof ApiError ? err.message : fallback);
+  function fail(cause: unknown, fallback: string) {
+    setError(cause instanceof ApiError ? cause.message : fallback);
   }
 
   async function handleInspect(e: React.FormEvent) {

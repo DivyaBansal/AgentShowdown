@@ -12,7 +12,15 @@
  */
 
 import { useEffect, useReducer, useRef, useState } from "react";
-import { ApiError, startRun, type AgentInfo, type AgentSpec, type Feature } from "../api";
+import {
+  ApiError,
+  parseVerifyOn,
+  startRun,
+  type AgentInfo,
+  type AgentSpec,
+  type Feature,
+  type VerifyOn,
+} from "../api";
 import { AgentSpecFields } from "./AgentSpecFields";
 import { emptyAgent, emptyFeature, featuresReducer } from "./featuresReducer";
 import { Field } from "./ui/Field";
@@ -47,7 +55,7 @@ export function RunLauncher({
 }) {
   const [rows, dispatch] = useReducer(featuresReducer, [emptyFeature()]);
   const [telemetry, setTelemetry] = useState(false);
-  const [verifyOn, setVerifyOn] = useState<"host" | "sandbox">("host");
+  const [verifyOn, setVerifyOn] = useState<VerifyOn>("host");
   const [openPr, setOpenPr] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -172,7 +180,7 @@ export function RunLauncher({
             <select
               id="verify-on"
               value={verifyOn}
-              onChange={(e) => setVerifyOn(e.target.value as "host" | "sandbox")}
+              onChange={(e) => setVerifyOn(parseVerifyOn(e.target.value))}
             >
               <option value="host">host (cheaper)</option>
               <option value="sandbox">sandbox</option>

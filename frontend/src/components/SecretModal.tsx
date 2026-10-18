@@ -40,7 +40,7 @@ export function SecretModal({ onClose }: { onClose: () => void }) {
   const firstField = useRef<HTMLSelectElement>(null);
 
   useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     firstField.current?.focus();
 
     return () => previous?.focus();
@@ -103,7 +103,7 @@ export function SecretModal({ onClose }: { onClose: () => void }) {
 
           <fieldset className="group">
             <legend>Source</legend>
-            {(["command", "ref", "token"] as Method[]).map((m) => (
+            {(["command", "ref", "token"] satisfies Method[]).map((m) => (
               <label key={m} className="check">
                 <input
                   type="radio"

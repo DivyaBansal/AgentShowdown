@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fetchInit, jsonBody } from "../test/fetch";
 import { SecretModal } from "./SecretModal";
 
 function stubOk() {
@@ -60,12 +61,7 @@ describe("SecretModal", () => {
 
     await waitFor(() => expect(mock).toHaveBeenCalled());
 
-    const body = JSON.parse(String(mock.mock.calls[0]?.[1]?.body)) as {
-      service: string;
-      command: string;
-    };
-
-    expect(body).toEqual({ service: "github", command: "gh auth token" });
+    expect(jsonBody(fetchInit(mock))).toEqual({ service: "github", command: "gh auth token" });
   });
 
   it("closes on Escape", () => {

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { fetchInit, jsonBody, type Json } from "./test/fetch";
 import {
   ApiError,
   answerJob,
@@ -21,7 +22,7 @@ import {
 
 afterEach(() => vi.restoreAllMocks());
 
-function ok(body: unknown) {
+function ok(body: Json) {
   return vi.fn().mockResolvedValue({ ok: true, json: async () => body });
 }
 
@@ -39,12 +40,12 @@ describe("request handling", () => {
 
     await fetchRuns();
     expect(
-      (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers,
+      fetchInit(fetchMock, 0)?.headers,
     ).toBeUndefined();
 
     await answerJob("box-1", "use the second approach");
     expect(
-      (fetchMock.mock.calls[1]?.[1] as RequestInit | undefined)?.headers,
+      fetchInit(fetchMock, 1)?.headers,
     ).toEqual({ "Content-Type": "application/json" });
   });
 
@@ -175,16 +176,14 @@ describe("mutations", () => {
     const fetchMock = ok({ removed: ["box-1"] });
     vi.stubGlobal("fetch", fetchMock);
     await expect(removeSandbox("box-1")).resolves.toEqual({ removed: ["box-1"] });
-    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
-    expect(JSON.parse(String(init?.body))).toEqual({ force: false });
+    expect(jsonBody(fetchInit(fetchMock))).toEqual({ force: false });
   });
 
   it("removes a sandbox with force when the safeguard should be bypassed", async () => {
     const fetchMock = ok({ removed: ["box-1"] });
     vi.stubGlobal("fetch", fetchMock);
     await removeSandbox("box-1", true);
-    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
-    expect(JSON.parse(String(init?.body))).toEqual({ force: true });
+    expect(jsonBody(fetchInit(fetchMock))).toEqual({ force: true });
   });
 
   it("stops a sandbox", async () => {
@@ -204,15 +203,13 @@ describe("mutations", () => {
     const fetchMock = ok({ removed: [], jobs_marked_lost: 0 });
     vi.stubGlobal("fetch", fetchMock);
     await killAllSandboxes();
-    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
-    expect(JSON.parse(String(init?.body))).toEqual({ confirm: "KILL ALL" });
+    expect(jsonBody(fetchInit(fetchMock))).toEqual({ confirm: "KILL ALL" });
   });
 });
 
 describe("openEventStream", () => {
   it("subscribes through the same /api prefix", () => {
-    const source = openEventStream() as unknown as { url: string };
-    expect(source.url).toBe("/api/events");
+    expect(openEventStream().url).toBe("/api/events");
   });
 });
 

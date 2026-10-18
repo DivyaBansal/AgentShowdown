@@ -14,6 +14,7 @@ import { useEffect, useState } from "react";
 import {
   ApiError,
   fetchConfig,
+  parseVerifyOn,
   saveConfig,
   type AgentInfo,
   type ConfigDoc,
@@ -222,7 +223,7 @@ export function ConfigEditor({
               <select
                 id="verify-on-config"
                 value={values.run.verify_on}
-                onChange={(e) => set("run", { verify_on: e.target.value as "host" | "sandbox" })}
+                onChange={(e) => set("run", { verify_on: parseVerifyOn(e.target.value) })}
               >
                 <option value="host">host (cheaper)</option>
                 <option value="sandbox">sandbox</option>

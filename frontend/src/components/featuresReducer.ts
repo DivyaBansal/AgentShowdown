@@ -6,7 +6,7 @@
  * is unit-testable without rendering anything.
  */
 
-import type { AgentSpec, FeatureInput } from "../api";
+import type { AgentSpec, EnvVars, FeatureInput } from "../api";
 
 export type FeaturesAction =
   | { type: "load"; features: FeatureInput[] }
@@ -27,7 +27,7 @@ export type FeaturesAction =
       value: string;
     }
   | { type: "setAgentSkipPermissions"; index: number; agentIndex: number; value: boolean | null }
-  | { type: "setAgentEnv"; index: number; agentIndex: number; env: Record<string, string> }
+  | { type: "setAgentEnv"; index: number; agentIndex: number; env: EnvVars }
   | { type: "setAgentKit"; index: number; agentIndex: number; kit: string[] }
   | { type: "syncFeatures"; previous: FeatureInput[]; next: FeatureInput[] };
 

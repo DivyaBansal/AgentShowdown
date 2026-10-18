@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { jsonBody } from "../test/fetch";
 import type { AgentInfo, Feature } from "../api";
 import { FeatureEditor } from "./FeatureEditor";
 
@@ -115,17 +116,17 @@ describe("FeatureEditor", () => {
     // That base URL also switches on the Ollama preset, which lists models
     // with a GET of its own -- so find the save among the calls.
     const saveCall = () =>
-      mock.mock.calls.find((call) => (call[1] as RequestInit | undefined)?.body !== undefined);
+      mock.mock.calls.find((call) => call[1]?.body !== undefined);
 
     await waitFor(() => expect(saveCall()).toBeDefined());
 
-    const body = JSON.parse(String((saveCall()?.[1] as RequestInit).body)) as {
-      features: { id: string; agents: { env: Record<string, string> }[] }[];
-    };
-
-    expect(body.features[0]?.id).toBe("add-verbs");
-    expect(body.features[0]?.agents[0]?.env).toEqual({
-      ANTHROPIC_BASE_URL: "http://host.docker.internal:11434",
+    expect(jsonBody(saveCall()?.[1])).toMatchObject({
+      features: [
+        {
+          id: "add-verbs",
+          agents: [{ env: { ANTHROPIC_BASE_URL: "http://host.docker.internal:11434" } }],
+        },
+      ],
     });
   });
 

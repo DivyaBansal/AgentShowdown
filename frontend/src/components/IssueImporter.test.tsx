@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fetchInitFor, jsonBody } from "../test/fetch";
 import { IssueImporter } from "./IssueImporter";
 
 const ISSUES = [
@@ -53,9 +54,7 @@ describe("IssueImporter", () => {
     fireEvent.click(screen.getByRole("button", { name: /import selected/i }));
 
     await waitFor(() => expect(screen.getByRole("status")).toBeInTheDocument());
-    const post = mock.mock.calls.find((c) => (c[1] as RequestInit)?.method === "POST");
-    const body = JSON.parse(String((post?.[1] as RequestInit).body)) as { issues: number[] };
-    expect(body.issues).toEqual([7]);
+    expect(jsonBody(fetchInitFor(mock, "POST"))).toMatchObject({ issues: [7] });
   });
 
   it("cannot import with nothing selected", async () => {

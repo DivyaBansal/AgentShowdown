@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type Json } from "../test/fetch";
 import { WorkspacePicker } from "./WorkspacePicker";
 
 const INFO = {
@@ -156,7 +157,7 @@ describe("WorkspacePicker clone progress", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string) => {
-        let body: unknown = { active: null, workspaces: [] };
+        let body: Json = { active: null, workspaces: [] };
 
         if (url.includes("/clone/")) {
           polls += 1;

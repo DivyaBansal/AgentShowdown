@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fetchInitFor, jsonBody, type Json } from "../test/fetch";
 import { ConfigEditor } from "./ConfigEditor";
 
 const DOC = {
@@ -36,7 +37,7 @@ const DOC = {
   },
 };
 
-function stub(doc: unknown = DOC, putOk = true) {
+function stub(doc: Json = DOC, putOk = true) {
   const mock = vi.fn((_url: string, init?: RequestInit) => {
     if (init?.method === "PUT") {
       return Promise.resolve({
@@ -103,16 +104,10 @@ describe("ConfigEditor", () => {
       screen.getByRole("button", { name: /save configuration/i }).closest("form")!,
     );
     await waitFor(() => expect(screen.getByRole("status")).toBeInTheDocument());
-    const put = mock.mock.calls.find((c) => (c[1] as RequestInit)?.method === "PUT");
-
-    const body = JSON.parse(String((put?.[1] as RequestInit).body)) as {
-      agent: { model: string };
-      run: { test_command: string; status_file: string };
-    };
-
-    expect(body.agent.model).toBe("");
-    expect(body.run.test_command).toBe("");
-    expect(body.run.status_file).toBe(".agent_status.json");
+    expect(jsonBody(fetchInitFor(mock, "PUT"))).toMatchObject({
+      agent: { model: "" },
+      run: { test_command: "", status_file: ".agent_status.json" },
+    });
   });
 
   it("offers the repo's detected remote and the agent's default model as hints", async () => {
@@ -216,13 +211,9 @@ describe("ConfigEditor", () => {
     );
 
     await waitFor(() => expect(screen.getByRole("status")).toBeInTheDocument());
-    const put = mock.mock.calls.find((c) => (c[1] as RequestInit)?.method === "PUT");
-
-    const body = JSON.parse(String((put?.[1] as RequestInit).body)) as {
-      github: { base_branch: string };
-    };
-
-    expect(body.github.base_branch).toBe("develop");
+    expect(jsonBody(fetchInitFor(mock, "PUT"))).toMatchObject({
+      github: { base_branch: "develop" },
+    });
   });
 
   it("requires a typed confirmation before a host-run test command", async () => {

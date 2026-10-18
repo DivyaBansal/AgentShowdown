@@ -6,6 +6,7 @@
 
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { type Json } from "../test/fetch";
 import { AgentSpecFields } from "./AgentSpecFields";
 import { emptyAgent } from "./featuresReducer";
 import type { AgentInfo, AgentSpec } from "../api";
@@ -129,7 +130,7 @@ describe("AgentSpecFields", () => {
       ANTHROPIC_DEFAULT_HAIKU_MODEL: "qwen3.5:122b",
     };
 
-    function stubOllama(body: unknown) {
+    function stubOllama(body: Json) {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => body }));
     }
 
@@ -185,7 +186,7 @@ describe("AgentSpecFields", () => {
       const optionValues = () =>
         screen
           .getAllByRole("option", { hidden: true })
-          .map((option) => (option as HTMLOptionElement).value);
+          .map((option) => option.getAttribute("value"));
 
       await waitFor(() => expect(optionValues()).toContain("gemma4:31b"));
       expect(optionValues()).not.toContain("claude-sonnet-5");

@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { fetchInit, jsonBody, type Json } from "../test/fetch";
 import { RunLauncher } from "./RunLauncher";
 import type { AgentInfo, Feature } from "../api";
 
@@ -80,19 +81,11 @@ function launcher(overrides: { disabled?: boolean; onLaunched?: () => void } = {
   );
 }
 
-function okFetch(body: unknown) {
+function okFetch(body: Json) {
   const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => body });
   vi.stubGlobal("fetch", fetchMock);
 
   return fetchMock;
-}
-
-function sentBody(fetchMock: ReturnType<typeof vi.fn>) {
-  const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
-
-  return JSON.parse(String(init?.body)) as {
-    entries: { feature_id: string; agents: { agent_id: string; model: string | null }[] }[];
-  };
 }
 
 describe("RunLauncher", () => {
@@ -109,10 +102,10 @@ describe("RunLauncher", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Started 1 run"));
     expect(onLaunched).toHaveBeenCalled();
 
-    const body = sentBody(fetchMock);
-    expect(body.entries).toHaveLength(1);
-    expect(body.entries[0]?.feature_id).toBe("add-separable-verbs");
-    expect(body.entries[0]?.agents[0]?.agent_id).toBe("claude");
+    // toMatchObject compares arrays by length too, so this pins one entry.
+    expect(jsonBody(fetchInit(fetchMock))).toMatchObject({
+      entries: [{ feature_id: "add-separable-verbs", agents: [{ agent_id: "claude" }] }],
+    });
   });
 
   it("starts several features at once, each with its own agents", async () => {
@@ -133,11 +126,9 @@ describe("RunLauncher", () => {
 
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Started 2 runs"));
 
-    const body = sentBody(fetchMock);
-    expect(body.entries.map((e) => e.feature_id)).toEqual([
-      "add-separable-verbs",
-      "add-inseparable-verbs",
-    ]);
+    expect(jsonBody(fetchInit(fetchMock))).toMatchObject({
+      entries: [{ feature_id: "add-separable-verbs" }, { feature_id: "add-inseparable-verbs" }],
+    });
   });
 
   it("fills a row with the feature's own agents when it is chosen", () => {
@@ -208,7 +199,7 @@ describe("RunLauncher", () => {
 
     const rows = screen.getAllByRole("group", { name: /^feature \d/i });
     const second = within(rows[1]!).getByLabelText(/^feature$/i);
-    expect(within(second as HTMLElement).queryByRole("option", { name: "add-separable-verbs" }))
+    expect(within(second).queryByRole("option", { name: "add-separable-verbs" }))
       .not.toBeInTheDocument();
   });
 
@@ -248,7 +239,9 @@ describe("RunLauncher", () => {
     fireEvent.click(screen.getByRole("button", { name: /start run/i }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(sentBody(fetchMock).entries[0]?.agents[0]?.model).toBeNull();
+    expect(jsonBody(fetchInit(fetchMock))).toMatchObject({
+      entries: [{ agents: [{ model: null }] }],
+    });
   });
 
   it("states the cost of telemetry and of opening a pull request", () => {
