@@ -306,6 +306,20 @@ shared sampler thread; ~720 rows/sandbox retained).
 
 No dollar cost is computed.
 
+## Architecture
+
+<a href="docs/architecture/index.html">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/architecture/overview-dark.png">
+    <img alt="Run lifecycle: the React SPA calls the FastAPI app, which hands runs to the dispatcher; job threads drive sbx sandboxes, record status in jobs.sqlite3, run tests and lint against the target repo, and publish job events through the EventBus to the SPA's SSE stream." src="docs/architecture/overview-light.png">
+  </picture>
+</a>
+
+The interactive version (theme toggle, animated flows) is
+[docs/architecture/index.html](docs/architecture/index.html). GitHub shows
+HTML files as source, so clone the repo and open it in a browser. It was
+generated with archify (see `.archify/` for the spec it was built from).
+
 ## Repo layout
 
 ```
