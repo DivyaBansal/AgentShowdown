@@ -18,6 +18,8 @@ from backend.orchestrator.config import (
     resolve_kit_paths,
     resolve_model,
     resolve_provider,
+    spec_from_json,
+    spec_to_json,
     uses_custom_model_endpoint,
     validate_model,
 )
@@ -596,3 +598,24 @@ agents:
     assert config.agent_profiles["claude"].env == {
         "ANTHROPIC_BASE_URL": "http://host.docker.internal:11434"
     }
+
+
+def test_spec_json_round_trips_every_field() -> None:
+    spec = AgentSpec(
+        agent_id="claude",
+        run_label="b",
+        model="qwen3.5:122b",
+        command="echo hi",
+        dangerously_skip_permissions=False,
+        kit=["./kits/a"],
+        provider="ollama",
+        env={"ANTHROPIC_BASE_URL": "http://host.docker.internal:11434"},
+    )
+    assert spec_from_json(spec_to_json(spec)) == spec
+
+
+@pytest.mark.parametrize(
+    "raw", ["not json", "[1, 2]", '{"model": "x"}', '{"agent_id": "c", "x": 1}']
+)
+def test_spec_from_json_returns_none_for_unreadable_input(raw: str) -> None:
+    assert spec_from_json(raw) is None

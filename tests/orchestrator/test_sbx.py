@@ -227,6 +227,27 @@ _LS_JSON = json.dumps(
 )
 
 
+def test_sbx_launch_agent_does_not_pass_detach_to_exec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """sbx v0.48.0 fails `sbx exec -d` with "--detach is not supported for
+    exec", so the agent never starts. The launch must self-daemonize inside
+    a plain `sbx exec` instead.
+    """
+    calls = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: calls.append(cmd) or _completed())
+
+    sbx.sbx_launch_agent("box-1", "claude", "do the thing", _config())
+
+    assert len(calls) == 1
+    argv = calls[0]
+    assert argv[:5] == ["sbx", "exec", "box-1", "bash", "-lc"]
+    assert "-d" not in argv
+    assert "--detach" not in argv
+    # The script still backgrounds itself so the exec returns immediately.
+    assert "&\ndisown" in argv[5]
+
+
 def test_sbx_list_uses_the_host_side_json_listing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -244,6 +265,18 @@ def test_sbx_list_uses_the_host_side_json_listing(
     assert calls == [["sbx", "ls", "--json"]]
     assert set(listing) == {"box-1", "box-2"}
     assert listing["box-1"]["status"] == "running"
+
+
+def test_sbx_list_reads_the_bare_array_listing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """sbx v0.48.0 dropped the {"sandboxes": [...]} wrapper. Reading the bare
+    array as empty made a stopped sandbox look gone, so respawn tried to
+    `sbx create` over the existing name and failed.
+    """
+    bare = json.dumps([{"name": "box-1", "agent": "claude", "status": "stopped"}])
+    monkeypatch.setattr(sbx, "run", lambda *a, **k: _completed(stdout=bare))
+
+    assert sbx.sbx_status("box-1") == "stopped"
+    assert sbx.sbx_exists("box-1") is True
 
 
 def test_sbx_exists_true_when_name_in_listing(monkeypatch: pytest.MonkeyPatch) -> None:

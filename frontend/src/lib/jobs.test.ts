@@ -4,6 +4,7 @@ import {
   canRespawn,
   canStop,
   compareNullableAscending,
+  elapsedSeconds,
   formatDiff,
   formatDuration,
   placements,
@@ -139,5 +140,30 @@ describe("canRespawn", () => {
 
   it("excludes awaiting_input -- that needs an answer, not a bare restart", () => {
     expect(canRespawn("awaiting_input")).toBe(false);
+  });
+});
+
+describe("elapsedSeconds", () => {
+  const start = "2026-10-18T12:00:00.000Z";
+  const startMs = Date.parse(start);
+
+  it("times an in-flight job live from started_at", () => {
+    const running = job({ status: "running", started_at: start, duration_seconds: null });
+    expect(elapsedSeconds(running, startMs + 5_000)).toBe(5);
+    expect(elapsedSeconds(running, startMs + 65_000)).toBe(65);
+  });
+
+  it("ignores a stale recorded duration while running", () => {
+    const respawned = job({ status: "running", started_at: start, duration_seconds: 42 });
+    expect(elapsedSeconds(respawned, startMs + 3_000)).toBe(3);
+  });
+
+  it("uses the recorded duration once finished", () => {
+    const done = job({ status: "succeeded", started_at: start, duration_seconds: 100 });
+    expect(elapsedSeconds(done, startMs + 999_000)).toBe(100);
+  });
+
+  it("falls back to the recorded duration when started_at is missing", () => {
+    expect(elapsedSeconds(job({ status: "queued", duration_seconds: null }), startMs)).toBeNull();
   });
 });

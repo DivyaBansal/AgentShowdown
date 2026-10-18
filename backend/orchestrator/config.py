@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -365,6 +367,29 @@ class AgentSpec:
     kit: list[str] = field(default_factory=list)
     provider: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+
+
+def spec_to_json(spec: AgentSpec) -> str:
+    """Serializes an AgentSpec for StateStore.set_spec."""
+    return json.dumps(dataclasses.asdict(spec), sort_keys=True)
+
+
+def spec_from_json(raw: str) -> AgentSpec | None:
+    """Parses a spec written by spec_to_json.
+
+    Args:
+        raw: The stored JSON.
+
+    Returns:
+        The AgentSpec, or None if `raw` isn't a spec this version can read
+        (corrupt, or written by a version with different fields) -- callers
+        then fall back to the features file.
+    """
+    try:
+        data = json.loads(raw)
+        return AgentSpec(**data) if isinstance(data, dict) else None
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def resolve_model(spec: AgentSpec, profile: AgentProfile | None, config: Config) -> str:

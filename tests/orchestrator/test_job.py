@@ -1087,6 +1087,64 @@ def test_respawn_job_fresh_delegates_to_run_job(
     assert run_job_calls == [(feature, spec)]
 
 
+_OLLAMA_ENV = {
+    "ANTHROPIC_AUTH_TOKEN": "ollama",
+    "ANTHROPIC_BASE_URL": "http://host.docker.internal:11434",
+}
+
+
+def test_fresh_respawn_keeps_env_the_run_was_launched_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run launcher sends its own copy of each agent, so a run's env may
+    never reach features.yaml. Respawn used to rebuild the spec from the
+    features file and relaunch without the Ollama env.
+    """
+    config = _config(tmp_path)
+    # What features.yaml holds: the model, but not the run-only env.
+    saved = AgentSpec(agent_id="claude", model="qwen3.5:122b")
+    feature = _feature([saved])
+    launched = AgentSpec(agent_id="claude", model="qwen3.5:122b", env=dict(_OLLAMA_ENV))
+    sandbox_name = job_module.sandbox_name_for(feature.id, launched)
+
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
+    create_calls: list[dict] = []
+    monkeypatch.setattr(job_module, "sbx_create_detached", lambda **kw: create_calls.append(kw))
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: None)
+    monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "timed_out")
+
+    job_module.run_job(config, feature, launched)
+    StateStore(config.state_db_path).upsert(sandbox_name, status="crashed")
+
+    _f, spec, in_place = job_module.plan_respawn(config, {"f1": feature}, sandbox_name)
+    job_module.respawn_job(config, feature, spec, sandbox_name, in_place=in_place)
+
+    assert in_place is False
+    assert len(create_calls) == 2
+    assert create_calls[1]["env"] == _OLLAMA_ENV
+
+
+def test_spec_for_job_falls_back_to_features_file_when_none_recorded(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    saved = AgentSpec(agent_id="claude", model="from-yaml")
+    feature = _feature([saved])
+    sandbox_name = job_module.sandbox_name_for(feature.id, saved)
+
+    with StateStore(config.state_db_path) as store:
+        assert job_module.spec_for_job(config, store, feature, sandbox_name) == saved
+
+
+def test_spec_for_job_falls_back_when_recorded_spec_is_unreadable(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    saved = AgentSpec(agent_id="claude", model="from-yaml")
+    feature = _feature([saved])
+    sandbox_name = job_module.sandbox_name_for(feature.id, saved)
+
+    with StateStore(config.state_db_path) as store:
+        store.set_spec(sandbox_name, '{"agent_id": "claude", "no_such_field": 1}')
+        assert job_module.spec_for_job(config, store, feature, sandbox_name) == saved
+
+
 # --- reattach_job --------------------------------------------------------------
 
 
@@ -1385,3 +1443,103 @@ def test_verify_on_sandbox_falls_back_to_the_default_workdir(
     job_module._verify(config, "box-1", "ref", "pytest", "")
 
     assert seen["workdir"] is None
+
+
+# A previous attempt's outcome, as `_finalize_success` / `_await_and_finalize`
+# would have left it.
+_STALE_ATTEMPT = {
+    "finished_at": "2026-01-01T00:00:00+00:00",
+    "duration_seconds": 42.0,
+    "input_tokens": 900,
+    "output_tokens": 80,
+    "num_turns": 4,
+    "files_changed": 3,
+    "lines_added": 40,
+    "lines_removed": 2,
+    "tests_passed": 0,
+    "lint_passed": 1,
+}
+
+
+def _capture_row_while_polling(
+    monkeypatch: pytest.MonkeyPatch, config: Config, sandbox_name: str
+) -> dict:
+    """Snapshots the job row at the moment polling starts, i.e. what the UI
+    shows for the whole time the new attempt is running."""
+    seen: dict = {}
+
+    def poll(*_a: object) -> str:
+        seen.update(_job(StateStore(config.state_db_path), sandbox_name))
+        return "stopped"
+
+    monkeypatch.setattr(job_module, "poll_until_signal", poll)
+    return seen
+
+
+def _assert_previous_attempt_cleared(row: dict) -> None:
+    assert row["status"] == "running"
+    assert row["started_at"] is not None
+    for column in _STALE_ATTEMPT:
+        assert row[column] is None, column
+
+
+def test_relaunch_clears_previous_attempts_metrics_while_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+    StateStore(config.state_db_path).upsert(
+        sandbox_name, feature_id=feature.id, agent_id="claude", status="crashed", **_STALE_ATTEMPT
+    )
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
+    monkeypatch.setattr(job_module, "sbx_create_detached", lambda **kw: None)
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: None)
+    seen = _capture_row_while_polling(monkeypatch, config, sandbox_name)
+
+    job_module.run_job(config, feature, spec)
+
+    _assert_previous_attempt_cleared(seen)
+
+
+def test_resume_clears_previous_attempts_metrics_while_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    feature = _feature()
+    sandbox_name = job_module.sandbox_name_for(feature.id, AgentSpec(agent_id="claude"))
+    StateStore(config.state_db_path).upsert(
+        sandbox_name,
+        feature_id=feature.id,
+        agent_id="claude",
+        branch="agent/f1/claude",
+        status="awaiting_input",
+        **_STALE_ATTEMPT,
+    )
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: True)
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: None)
+    seen = _capture_row_while_polling(monkeypatch, config, sandbox_name)
+
+    job_module.resume_job(config, {"f1": feature}, sandbox_name, "use option B")
+
+    _assert_previous_attempt_cleared(seen)
+
+
+def test_respawn_in_place_clears_previous_attempts_metrics_while_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+    StateStore(config.state_db_path).upsert(
+        sandbox_name, feature_id=feature.id, agent_id="claude", status="stopped", **_STALE_ATTEMPT
+    )
+    monkeypatch.setattr(job_module, "sbx_restart_detached", lambda name, agent: None)
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: None)
+    seen = _capture_row_while_polling(monkeypatch, config, sandbox_name)
+
+    job_module.respawn_job(config, feature, spec, sandbox_name, in_place=True)
+
+    _assert_previous_attempt_cleared(seen)

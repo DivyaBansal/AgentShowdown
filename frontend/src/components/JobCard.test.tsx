@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { JobCard } from "./JobCard";
 import type { Job } from "../api";
@@ -54,6 +54,33 @@ describe("JobCard", () => {
     const tokens = screen.getByText("Tokens").nextElementSibling;
     expect(tokens).toHaveTextContent("not reported");
     expect(tokens).not.toHaveTextContent("0");
+  });
+
+  it("counts the duration up while the job is running", () => {
+    vi.useFakeTimers();
+
+    try {
+      vi.setSystemTime(new Date("2026-10-18T12:00:10.000Z"));
+      render(
+        <JobCard
+          job={job({
+            status: "running",
+            started_at: "2026-10-18T12:00:00.000Z",
+            duration_seconds: null,
+          })}
+          color="var(--series-1)"
+        />,
+      );
+      const duration = screen.getByText("Duration").nextElementSibling;
+      expect(duration).toHaveTextContent("10.0s");
+
+      act(() => {
+        vi.advanceTimersByTime(5_000);
+      });
+      expect(duration).toHaveTextContent("15.0s");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("distinguishes two runs of the same agent by run label", () => {

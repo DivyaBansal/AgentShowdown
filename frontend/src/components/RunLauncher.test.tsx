@@ -38,6 +38,16 @@ const agents: AgentInfo[] = [
     reports_token_usage: true,
   },
   {
+    agent_id: "codex",
+    requires_command: false,
+    accepts_model: true,
+    supports_skip_permissions: true,
+    verified: true,
+    known_models: ["gpt-5.5"],
+    default_model: "gpt-5.5",
+    reports_token_usage: true,
+  },
+  {
     agent_id: "cursor",
     requires_command: false,
     accepts_model: true,
@@ -135,6 +145,54 @@ describe("RunLauncher", () => {
     });
 
     expect(screen.getByLabelText(/^model$/i)).toHaveValue("claude-haiku-4-5");
+  });
+
+  it("picks up a feature saved in Setup after the row was filled", () => {
+    const { rerender } = launcher();
+    fireEvent.change(screen.getByLabelText(/^feature$/i), {
+      target: { value: "add-separable-verbs" },
+    });
+
+    const [first, ...rest] = features;
+    const saved: Feature[] = [
+      { ...first!, agents: [{ ...first!.agents[0]!, model: "claude-sonnet-4-5" }] },
+      ...rest,
+    ];
+    rerender(
+      <RunLauncher features={saved} agents={agents} disabled={false} onLaunched={() => {}} />,
+    );
+
+    expect(screen.getByLabelText(/^model$/i)).toHaveValue("claude-sonnet-4-5");
+  });
+
+  it("empties the model when the agent is switched", () => {
+    launcher();
+    fireEvent.change(screen.getByLabelText(/^feature$/i), {
+      target: { value: "add-separable-verbs" },
+    });
+
+    fireEvent.change(screen.getByLabelText(/^agent$/i), { target: { value: "cursor" } });
+
+    expect(screen.getByLabelText(/^model$/i)).toHaveValue("");
+  });
+
+  it("points the model input at the new agent's suggestions when the agent changes", () => {
+    launcher();
+    fireEvent.change(screen.getByLabelText(/^feature$/i), {
+      target: { value: "add-separable-verbs" },
+    });
+    const model = screen.getByLabelText(/^model$/i);
+    const before = model.getAttribute("list");
+
+    fireEvent.change(screen.getByLabelText(/^agent$/i), { target: { value: "codex" } });
+
+    // Datalist suggestions have no accessible role, so read the list the
+    // input names. It must be a new element: Chromium ignores options
+    // swapped inside the old one.
+    const listId = screen.getByLabelText(/^model$/i).getAttribute("list");
+    expect(listId).not.toBe(before);
+    const options = [...(document.getElementById(listId ?? "")?.querySelectorAll("option") ?? [])];
+    expect(options.map((o) => o.value)).toEqual(["gpt-5.5"]);
   });
 
   it("does not offer a feature already chosen in another row", () => {

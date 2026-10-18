@@ -11,7 +11,7 @@
  * Renders only the form; the surrounding view supplies the heading.
  */
 
-import { useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { ApiError, startRun, type AgentInfo, type AgentSpec, type Feature } from "../api";
 import { AgentSpecFields } from "./AgentSpecFields";
 import { emptyAgent, emptyFeature, featuresReducer } from "./featuresReducer";
@@ -51,6 +51,15 @@ export function RunLauncher({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Rows copy a feature's agents when it is picked, so a later save in Setup
+  // would otherwise never reach a row that was already filled in.
+  const previousFeatures = useRef(features);
+  useEffect(() => {
+    if (previousFeatures.current === features) return;
+    dispatch({ type: "syncFeatures", previous: previousFeatures.current, next: features });
+    previousFeatures.current = features;
+  }, [features]);
 
   const complete = rows.every((row) => row.id !== "" && row.agents.length > 0);
 

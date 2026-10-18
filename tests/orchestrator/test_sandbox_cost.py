@@ -114,7 +114,7 @@ def test_default_job_makes_exactly_three_sandbox_execs(
     joined = [" ".join(c) for c in execs]
     # The launch command also mentions the status file (its fallback wrapper
     # writes one if the agent dies), so match the actual read, not the path.
-    assert sum("-d" in c.split() for c in joined) == 1  # launching the agent
+    assert sum("disown" in c for c in joined) == 1  # launching the agent
     assert sum("cat .agent_status.json" in c for c in joined) == 1  # one status read
     assert sum("rev-parse" in c for c in joined) == 1  # one bundled teardown read
 

@@ -100,7 +100,9 @@ export function App() {
       <main className="app-main">
         <PreflightBanner preflight={preflight} />
 
-        {tab === "compare" ? (
+        {/* Both views stay mounted and the inactive one is hidden, so a
+            half-edited form survives a trip to the other tab. */}
+        <div role="tabpanel" className="tab-panel" aria-label="Compare" hidden={tab !== "compare"}>
           <CompareView
             jobs={jobs}
             features={features}
@@ -114,7 +116,8 @@ export function App() {
             }}
             loadSandboxes={loadSandboxes}
           />
-        ) : (
+        </div>
+        <div role="tabpanel" className="tab-panel" aria-label="Setup" hidden={tab !== "setup"}>
           <SetupView
             features={features}
             agents={agents}
@@ -124,7 +127,7 @@ export function App() {
               refresh();
             }}
           />
-        )}
+        </div>
       </main>
     </div>
   );

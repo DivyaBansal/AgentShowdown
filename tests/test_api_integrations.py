@@ -9,14 +9,16 @@ from typing import TYPE_CHECKING
 
 from backend.api import clone as clone_module
 from backend.api import issues as issues_module
+from backend.api import ollama as ollama_module
 from backend.api import routes_integrations
 from backend.api import secrets as secrets_module
 from backend.api.issues import acceptance_criteria_from_body
+from backend.api.ollama import parse_model_table
 from backend.api.secrets import parse_secret_table
 from backend.api.workspace import select
 from backend.main import app
 from backend.orchestrator.config import Feature
-from backend.orchestrator.process import run
+from backend.orchestrator.process import CommandTimeout, run
 from fastapi.testclient import TestClient
 
 if TYPE_CHECKING:
@@ -184,6 +186,65 @@ def test_list_secrets_reports_unavailable_without_sbx(
     body = client.get("/secrets").json()
 
     assert body == {"available": False, "secrets": []}
+
+
+# --- ollama -----------------------------------------------------------------
+
+OLLAMA_LIST_OUTPUT = """NAME                       ID              SIZE      MODIFIED
+qwen3.5:122b               8b9d11d807c5    81 GB     4 months ago
+qwen2.5-coder:32b          b92d6a0bd47e    19 GB     6 weeks ago
+
+"""
+
+
+def test_parses_model_names_from_ollama_list() -> None:
+    assert parse_model_table(OLLAMA_LIST_OUTPUT) == ["qwen3.5:122b", "qwen2.5-coder:32b"]
+
+
+def test_ollama_models_lists_what_is_pulled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ollama_module, "ollama_available", lambda: True)
+    monkeypatch.setattr(ollama_module, "run", lambda cmd, **kw: _completed(OLLAMA_LIST_OUTPUT))
+
+    body = client.get("/ollama/models").json()
+
+    assert body == {"available": True, "models": ["qwen3.5:122b", "qwen2.5-coder:32b"]}
+
+
+def test_ollama_models_reports_unavailable_without_the_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ollama_module, "ollama_available", lambda: False)
+
+    body = client.get("/ollama/models").json()
+
+    assert body == {"available": False, "models": []}
+
+
+def test_ollama_models_reports_unavailable_when_the_server_is_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ollama_module, "ollama_available", lambda: True)
+    monkeypatch.setattr(
+        ollama_module,
+        "run",
+        lambda cmd, **kw: _completed(returncode=1, stderr="could not connect to ollama app"),
+    )
+
+    body = client.get("/ollama/models").json()
+
+    assert body == {"available": False, "models": []}
+
+
+def test_ollama_models_reports_unavailable_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    def stalled(cmd: list[str], **kw: object) -> subprocess.CompletedProcess:
+        raise CommandTimeout("timed out")
+
+    monkeypatch.setattr(ollama_module, "ollama_available", lambda: True)
+    monkeypatch.setattr(ollama_module, "run", stalled)
+
+    body = client.get("/ollama/models").json()
+
+    assert body == {"available": False, "models": []}
 
 
 # --- issues -----------------------------------------------------------------

@@ -160,6 +160,18 @@
   gap: var(--space-4);
 }
 
+/* Each view sits in a panel that stays mounted while hidden, so it lays its
+   children out the way .app-main would. The [hidden] rule is needed because
+   an author `display` beats the browser's own one for the attribute. */
+.tab-panel {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
 /* The page intro on each view: title on the left, context on the right. */
 .view-head {
   display: flex;

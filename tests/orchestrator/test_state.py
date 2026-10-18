@@ -368,3 +368,21 @@ def test_opens_a_database_in_a_directory_that_does_not_exist_yet(tmp_path: Path)
         store.upsert("box-1", feature_id="f1", agent_id="claude", status="queued")
 
     assert db.exists()
+
+
+def test_set_spec_replaces_and_get_spec_reads_back(tmp_path: Path) -> None:
+    with StateStore(str(tmp_path / "s.sqlite3")) as store:
+        assert store.get_spec("box-1") is None
+        store.set_spec("box-1", '{"agent_id": "claude"}')
+        store.set_spec("box-1", '{"agent_id": "codex"}')
+        assert store.get_spec("box-1") == '{"agent_id": "codex"}'
+
+
+def test_recorded_spec_is_not_part_of_the_job_row(tmp_path: Path) -> None:
+    """Job rows go to the UI verbatim; a spec's env can hold real tokens."""
+    with StateStore(str(tmp_path / "s.sqlite3")) as store:
+        store.upsert("box-1", feature_id="f1", agent_id="claude", status="running")
+        store.set_spec("box-1", '{"env": {"TOKEN": "secret-value"}}')
+        rows = [store.get("box-1"), *store.all_jobs()]
+
+    assert all("secret-value" not in str(row) for row in rows)

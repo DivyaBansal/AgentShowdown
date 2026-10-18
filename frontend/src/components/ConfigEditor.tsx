@@ -72,6 +72,10 @@ export function ConfigEditor({
   const blocked = hostVerifyChanged && confirm !== CONFIRM_PHRASE;
   const agent = agents.find((a) => a.agent_id === values.agent.sbx_agent);
 
+  // Per agent, because Chromium keeps showing a datalist's old options when
+  // they are swapped in place; a new id makes the input read a new list.
+  const modelListId = `config-models-${values.agent.sbx_agent.replace(/[^\w-]/g, "_")}`;
+
   function set<K extends keyof ConfigValues>(section: K, patch: Partial<ConfigValues[K]>) {
     setValues((v) => (v ? { ...v, [section]: { ...v[section], ...patch } } : v));
   }
@@ -157,7 +161,22 @@ export function ConfigEditor({
                 id="sbx-agent"
                 list="config-agent-ids"
                 value={values.agent.sbx_agent}
-                onChange={(e) => set("agent", { sbx_agent: e.target.value })}
+                onChange={(e) => {
+                  const next = agents.find((a) => a.agent_id === e.target.value);
+
+                  // The model is required here, so switching to a known agent
+                  // swaps a model it doesn't serve for its default instead of
+                  // leaving the old vendor's name behind.
+                  const stale =
+                    next !== undefined &&
+                    next.known_models.length > 0 &&
+                    !next.known_models.includes(values.agent.model);
+
+                  set("agent", {
+                    sbx_agent: e.target.value,
+                    model: stale ? (next.default_model ?? "") : values.agent.model,
+                  });
+                }}
                 placeholder="claude"
                 required
               />
@@ -170,13 +189,13 @@ export function ConfigEditor({
             <Field id="default-model" label="Default model">
               <input
                 id="default-model"
-                list="config-models"
+                list={modelListId}
                 value={values.agent.model}
                 onChange={(e) => set("agent", { model: e.target.value })}
                 placeholder={agent?.default_model ?? "Model name"}
                 required
               />
-              <datalist id="config-models">
+              <datalist key={modelListId} id={modelListId}>
                 {(agent?.known_models ?? []).map((m) => (
                   <option key={m} value={m} />
                 ))}

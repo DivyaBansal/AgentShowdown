@@ -128,6 +128,70 @@ describe("featuresReducer", () => {
     expect(agent?.dangerously_skip_permissions).toBe(false);
   });
 
+  it("clears the model when the agent changes, so another vendor's name never sticks", () => {
+    const state: FeatureInput[] = [
+      { ...withOneFeature()[0]!, agents: [{ ...emptyAgent(), model: "claude-haiku-4-5" }] },
+    ];
+
+    const switched = featuresReducer(state, {
+      type: "setAgentField",
+      index: 0,
+      agentIndex: 0,
+      field: "agent_id",
+      value: "codex",
+    });
+
+    expect(switched[0]?.agents[0]?.agent_id).toBe("codex");
+    expect(switched[0]?.agents[0]?.model).toBeNull();
+  });
+
+  it("keeps the model when the agent is re-selected unchanged", () => {
+    const state: FeatureInput[] = [
+      { ...withOneFeature()[0]!, agents: [{ ...emptyAgent(), model: "claude-haiku-4-5" }] },
+    ];
+
+    const same = featuresReducer(state, {
+      type: "setAgentField",
+      index: 0,
+      agentIndex: 0,
+      field: "agent_id",
+      value: "claude",
+    });
+
+    expect(same[0]?.agents[0]?.model).toBe("claude-haiku-4-5");
+  });
+
+  it("carries saved feature changes into untouched rows but keeps edited ones", () => {
+    const haiku = { ...emptyAgent(), model: "claude-haiku-4-5" };
+    const sonnet = { ...emptyAgent(), model: "claude-sonnet-4-5" };
+    const previous: FeatureInput[] = [
+      { id: "f1", description: "", acceptance_criteria: [], agents: [haiku] },
+      { id: "f2", description: "", acceptance_criteria: [], agents: [haiku] },
+    ];
+    const next: FeatureInput[] = [
+      { id: "f1", description: "", acceptance_criteria: [], agents: [sonnet] },
+      { id: "f2", description: "", acceptance_criteria: [], agents: [sonnet] },
+    ];
+    const rows: FeatureInput[] = [
+      { id: "f1", description: "", acceptance_criteria: [], agents: [haiku] },
+      { id: "f2", description: "", acceptance_criteria: [], agents: [{ ...haiku, run_label: "mine" }] },
+    ];
+
+    const synced = featuresReducer(rows, { type: "syncFeatures", previous, next });
+
+    expect(synced[0]?.agents[0]?.model).toBe("claude-sonnet-4-5");
+    expect(synced[1]?.agents[0]?.model).toBe("claude-haiku-4-5");
+    expect(synced[1]?.agents[0]?.run_label).toBe("mine");
+  });
+
+  it("clears a row whose feature was deleted", () => {
+    const rows: FeatureInput[] = withOneFeature();
+
+    const synced = featuresReducer(rows, { type: "syncFeatures", previous: rows, next: [] });
+
+    expect(synced[0]).toEqual(emptyFeature());
+  });
+
   it("starts a new agent on a sane default", () => {
     expect(emptyAgent().agent_id).toBe("claude");
     expect(emptyAgent().env).toEqual({});

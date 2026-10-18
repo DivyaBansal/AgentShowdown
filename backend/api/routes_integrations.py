@@ -1,4 +1,4 @@
-"""Routes for cloning, secrets, and GitHub issue import."""
+"""Routes for cloning, secrets, Ollama models, and GitHub issue import."""
 
 from typing import Annotated
 
@@ -18,6 +18,7 @@ from backend.api.models import (
     IssueQuery,
     SecretRequest,
 )
+from backend.api.ollama import list_ollama_models
 from backend.api.secrets import list_secrets, store_secret
 from backend.api.settings import features_path, load_features
 from backend.api.workspace import active_workspace
@@ -82,8 +83,8 @@ def draft_feature_from_issue(issue: dict[str, object], specs: list[AgentSpec]) -
     )
 
 
-def register_integration_routes(app: FastAPI) -> None:
-    """Registers clone, secret and issue routes on `app`."""
+def register_integration_routes(app: FastAPI) -> None:  # noqa: PLR0915 -- one call per route
+    """Registers clone, secret, Ollama and issue routes on `app`."""
 
     @app.post("/workspaces/clone", status_code=202)
     def clone_repo(request: CloneRequest) -> dict[str, object]:
@@ -125,6 +126,11 @@ def register_integration_routes(app: FastAPI) -> None:
             # The message is built from stderr with secrets masked, never
             # from the argv -- see secrets.store_secret.
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/ollama/models")
+    def get_ollama_models() -> dict[str, object]:
+        """Models pulled into the host's Ollama, offered as suggestions."""
+        return list_ollama_models()
 
     @app.get("/github/issues")
     def github_issues(query: Annotated[IssueQuery, Depends()]) -> dict[str, object]:

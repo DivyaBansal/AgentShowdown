@@ -44,6 +44,25 @@ export function formatDuration(seconds: number | null): string | null {
   return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
 }
 
+/** Seconds to display as a job's duration.
+ *
+ * The backend only records `duration_seconds` once an attempt finishes, so
+ * a job still in flight is timed live from `started_at` instead -- otherwise
+ * the clock would sit still for the whole run.
+ */
+export function elapsedSeconds(
+  job: Pick<Job, "status" | "started_at" | "duration_seconds">,
+  nowMs: number,
+): number | null {
+  if (canStop(job.status) && job.started_at !== null) {
+    const started = Date.parse(job.started_at);
+
+    if (!Number.isNaN(started)) return Math.max(0, (nowMs - started) / 1000);
+  }
+
+  return job.duration_seconds;
+}
+
 /** Input + output, or null when neither half was reported. */
 export function totalTokens(job: Pick<Job, "input_tokens" | "output_tokens">): number | null {
   if (job.input_tokens === null && job.output_tokens === null) return null;

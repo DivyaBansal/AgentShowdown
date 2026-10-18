@@ -4,11 +4,14 @@
  * permissions toggle its CLI ignores, promises a change that never happens.
  */
 
-import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { AgentSpecFields } from "./AgentSpecFields";
 import { emptyAgent } from "./featuresReducer";
 import type { AgentInfo, AgentSpec } from "../api";
+import { OLLAMA_BASE_URL } from "../lib/ollama";
+
+afterEach(() => vi.unstubAllGlobals());
 
 const agents: AgentInfo[] = [
   {
@@ -116,5 +119,121 @@ describe("AgentSpecFields", () => {
 
     expect(screen.getByText(/flags unverified/i)).toBeInTheDocument();
     expect(screen.getByText(/no token data/i)).toBeInTheDocument();
+  });
+
+  describe("local Ollama model", () => {
+    const ollamaEnv = {
+      ANTHROPIC_BASE_URL: OLLAMA_BASE_URL,
+      ANTHROPIC_AUTH_TOKEN: "ollama",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "qwen3.5:122b",
+    };
+
+    function stubOllama(body: unknown) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => body }));
+    }
+
+    it("is offered for claude", () => {
+      fields({ agent_id: "claude" });
+      expect(screen.getByRole("checkbox", { name: /local ollama model/i })).not.toBeChecked();
+    });
+
+    it("isn't offered for other agents", () => {
+      fields({ agent_id: "opencode" });
+      expect(
+        screen.queryByRole("checkbox", { name: /local ollama model/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("fills in the endpoint variables and drops a claude-only model", () => {
+      const dispatch = fields({
+        agent_id: "claude",
+        model: "claude-sonnet-5",
+        env: { DEBUG: "1" },
+      });
+
+      fireEvent.click(screen.getByRole("checkbox", { name: /local ollama model/i }));
+
+      expect(dispatch).toHaveBeenCalledWith({
+        type: "setAgentField",
+        index: 0,
+        agentIndex: 0,
+        field: "model",
+        value: "",
+      });
+      expect(dispatch).toHaveBeenCalledWith({
+        type: "setAgentEnv",
+        index: 0,
+        agentIndex: 0,
+        env: {
+          DEBUG: "1",
+          ANTHROPIC_BASE_URL: OLLAMA_BASE_URL,
+          ANTHROPIC_AUTH_TOKEN: "ollama",
+        },
+      });
+    });
+
+    it("suggests the models Ollama has pulled", async () => {
+      stubOllama({ available: true, models: ["qwen3.5:122b", "gemma4:31b"] });
+
+      fields({ agent_id: "claude", model: "qwen3.5:122b", env: ollamaEnv });
+
+      expect(screen.getByRole("checkbox", { name: /local ollama model/i })).toBeChecked();
+      // Datalist options carry only a value, so they have no accessible
+      // name to query by; read the values of every option role instead.
+      const optionValues = () =>
+        screen
+          .getAllByRole("option", { hidden: true })
+          .map((option) => (option as HTMLOptionElement).value);
+      await waitFor(() => expect(optionValues()).toContain("gemma4:31b"));
+      expect(optionValues()).not.toContain("claude-sonnet-5");
+      expect(screen.getByText(/models pulled into this machine's ollama/i)).toBeInTheDocument();
+    });
+
+    it("says so when Ollama can't be listed", async () => {
+      stubOllama({ available: false, models: [] });
+
+      fields({ agent_id: "claude", env: ollamaEnv });
+
+      expect(await screen.findByText(/couldn't list ollama's models/i)).toBeInTheDocument();
+    });
+
+    it("routes background calls to a newly chosen model", () => {
+      stubOllama({ available: true, models: [] });
+      const dispatch = fields({ agent_id: "claude", model: "qwen3.5:122b", env: ollamaEnv });
+
+      fireEvent.change(screen.getByLabelText(/^model$/i), { target: { value: "gemma4:31b" } });
+
+      expect(dispatch).toHaveBeenCalledWith({
+        type: "setAgentEnv",
+        index: 0,
+        agentIndex: 0,
+        env: { ...ollamaEnv, ANTHROPIC_DEFAULT_HAIKU_MODEL: "gemma4:31b" },
+      });
+    });
+
+    it("removes only its own variables and the Ollama model when switched off", () => {
+      stubOllama({ available: true, models: [] });
+      const dispatch = fields({
+        agent_id: "claude",
+        model: "qwen3.5:122b",
+        env: { ...ollamaEnv, DEBUG: "1" },
+      });
+
+      fireEvent.click(screen.getByRole("checkbox", { name: /local ollama model/i }));
+
+      expect(dispatch).toHaveBeenCalledWith({
+        type: "setAgentField",
+        index: 0,
+        agentIndex: 0,
+        field: "model",
+        value: "",
+      });
+      expect(dispatch).toHaveBeenCalledWith({
+        type: "setAgentEnv",
+        index: 0,
+        agentIndex: 0,
+        env: { DEBUG: "1" },
+      });
+    });
   });
 });

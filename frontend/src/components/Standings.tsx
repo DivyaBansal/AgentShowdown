@@ -9,9 +9,12 @@
 import { useState } from "react";
 import type { Job } from "../api";
 import { seriesKey } from "../charts/palette";
+import { useNow } from "../hooks/useNow";
 import {
   compareForPlacement,
+  canStop,
   compareNullableAscending,
+  elapsedSeconds,
   formatDiff,
   formatDuration,
   placements,
@@ -53,13 +56,14 @@ function verdict(value: number | null) {
 export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job) => string }) {
   const [sortKey, setSortKey] = useState<SortKey>("rank");
   const [descending, setDescending] = useState(false);
+  const now = useNow(jobs.some((job) => canStop(job.status)));
 
   const rank = placements(jobs);
 
   // Nullable columns keep unreported values last in *both* directions:
   // flipping the sort must not float "no data" to the top as if it won.
   const metric: Record<Exclude<SortKey, "rank" | "agent">, (job: Job) => number | null> = {
-    duration: (job) => job.duration_seconds,
+    duration: (job) => elapsedSeconds(job, now),
     tokens: totalTokens,
     diff: diffSize,
   };
@@ -133,7 +137,7 @@ export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job
                   </span>
                 </td>
                 <td className="is-num num">
-                  {formatDuration(job.duration_seconds) ?? <span className="no-data">—</span>}
+                  {formatDuration(elapsedSeconds(job, now)) ?? <span className="no-data">—</span>}
                 </td>
                 <td className="is-num num">
                   {tokens === null ? <span className="no-data">—</span> : tokens.toLocaleString()}

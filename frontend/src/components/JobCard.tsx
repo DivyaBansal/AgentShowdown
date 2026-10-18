@@ -3,9 +3,11 @@
 import { useState } from "react";
 import { ApiError, respawnJob, stopSandbox, type Job } from "../api";
 import { seriesKey } from "../charts/palette";
+import { useNow } from "../hooks/useNow";
 import {
   canRespawn,
   canStop,
+  elapsedSeconds,
   formatDiff,
   formatDuration,
   statusTone,
@@ -45,6 +47,7 @@ export function JobCard({
   const [pending, setPending] = useState(false);
   const showStop = canStop(job.status);
   const showRespawn = canRespawn(job.status);
+  const now = useNow(showStop);
 
   async function handleStop() {
     setError(null);
@@ -82,7 +85,7 @@ export function JobCard({
       </div>
       <dl>
         <Metric label="Model" value={job.model} />
-        <Metric label="Duration" value={formatDuration(job.duration_seconds)} />
+        <Metric label="Duration" value={formatDuration(elapsedSeconds(job, now))} />
         <Metric label="Tokens" value={tokens === null ? null : `${tokens}`} />
         <Metric label="Diff" value={formatDiff(job)} />
         <Metric label="Branch" value={job.branch} />

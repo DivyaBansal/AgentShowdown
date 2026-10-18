@@ -476,7 +476,7 @@ def sbx_launch_agent(
     resume: bool = False,
 ) -> None:
     """Starts (or resumes) the agent inside an already-created sandbox,
-    backgrounded via `sbx exec -d` so this call returns immediately.
+    self-daemonized inside a plain `sbx exec` so this call returns immediately.
 
     Args:
         sandbox_name: Target sandbox.
@@ -501,17 +501,16 @@ def sbx_launch_agent(
         resume=resume,
     )
     shell_cmd = build_agent_shell_command(cmd_str, config.status_file, AGENT_LOG_PATH)
-    # `sbx exec -d` does not actually return until the backgrounded command
-    # exits (verified: `sbx exec -d <sandbox> sleep 30` blocks for ~30s), so
-    # relying on it alone leaves this call -- and the calling job thread --
-    # blocked for the agent's entire runtime instead of returning right
-    # away. Self-daemonize instead: background the real script ourselves
-    # with its own stdio fully detached from this exec session's pipes, so
-    # `sbx exec` has nothing left to wait on and returns immediately no
-    # matter what `-d` does.
+    # No `-d`: sbx v0.48.0 rejects it outright ("--detach is not supported
+    # for exec"), and on earlier versions it didn't return until the
+    # backgrounded command exited anyway. Self-daemonize instead: background
+    # the real script ourselves with its own stdio fully detached from this
+    # exec session's pipes, so `sbx exec` has nothing left to wait on and
+    # returns immediately. Verified on v0.48.0 that the child outlives the
+    # exec session.
     detached_cmd = f"({shell_cmd}) </dev/null >/dev/null 2>&1 &\ndisown 2>/dev/null || true\n"
     run(
-        ["sbx", "exec", "-d", sandbox_name, "bash", "-lc", detached_cmd],
+        ["sbx", "exec", sandbox_name, "bash", "-lc", detached_cmd],
         options=RunOptions(capture=False),
     )
 
@@ -552,7 +551,10 @@ def sbx_list() -> dict[str, dict]:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
         return {}
-    sandboxes = payload.get("sandboxes") if isinstance(payload, dict) else None
+    # sbx v0.48.0 prints a bare array; earlier versions wrapped it as
+    # {"sandboxes": [...]}. Misreading either as "no sandboxes" makes every
+    # live sandbox look gone, so accept both.
+    sandboxes = payload.get("sandboxes") if isinstance(payload, dict) else payload
     if not isinstance(sandboxes, list):
         return {}
     return {

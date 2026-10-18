@@ -20,6 +20,8 @@ from backend.orchestrator.config import (
     resolve_kit_paths,
     resolve_model,
     resolve_provider,
+    spec_from_json,
+    spec_to_json,
     uses_custom_model_endpoint,
     validate_model,
 )
@@ -64,6 +66,23 @@ CONTAINER_FAILURE_STATES = ("crashed", "error", "failed")
 # declared lost. A sandbox can briefly not appear right after creation, so a
 # single miss is not proof it is gone.
 _MISSING_OBSERVATIONS_BEFORE_LOST = 3
+
+# Outcome metrics are only written once an attempt finishes. Every path that
+# starts a new attempt clears them, otherwise a respawned or resumed job keeps
+# showing the previous attempt's duration/tokens/diff, frozen, for as long as
+# the new attempt runs.
+_ATTEMPT_RESET: dict[str, object] = {
+    "finished_at": None,
+    "duration_seconds": None,
+    "input_tokens": None,
+    "output_tokens": None,
+    "num_turns": None,
+    "files_changed": None,
+    "lines_added": None,
+    "lines_removed": None,
+    "tests_passed": None,
+    "lint_passed": None,
+}
 
 
 def _utc_now() -> str:
@@ -186,6 +205,40 @@ def find_spec_for_sandbox(config: Config, feature: Feature, sandbox_name: str) -
         f"'{sandbox_name}' -- was features.yaml edited since this job was "
         f"launched?"
     )
+
+
+def spec_for_job(
+    config: Config, store: StateStore, feature: Feature, sandbox_name: str
+) -> AgentSpec:
+    """Returns the AgentSpec a job was actually launched with.
+
+    A run can carry agent settings that were never saved to features.yaml
+    (the run launcher sends its own copy of each agent), so rebuilding the
+    spec from the features file would silently drop them -- e.g. the env
+    that points claude at a local Ollama. Prefer the spec `run_job`
+    recorded, and fall back to the features file only for jobs recorded
+    before specs were stored.
+
+    Args:
+        config: Orchestrator config.
+        store: The state store holding the job.
+        feature: The feature this sandbox belongs to.
+        sandbox_name: The job's sandbox.
+
+    Returns:
+        The recorded AgentSpec, else the one from find_spec_for_sandbox.
+
+    Raises:
+        CommandError: If nothing is recorded and no features.yaml entry
+            maps to sandbox_name.
+    """
+    raw = store.get_spec(sandbox_name)
+    spec = spec_from_json(raw) if raw is not None else None
+    if spec is not None:
+        return spec
+    if raw is not None:
+        log.warning("job_spec_unreadable", sandbox_name=sandbox_name)
+    return find_spec_for_sandbox(config, feature, sandbox_name)
 
 
 def poll_until_signal(config: Config, store: StateStore, sandbox_name: str, deadline: float) -> str:
@@ -593,6 +646,7 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
         run_label=spec.run_label,
         repo=host_repo_path(config),
     )
+    store.set_spec(sandbox_name, spec_to_json(spec))
 
     if not sandbox_alive:
         prompt = build_prompt(feature, branch, config.status_file)
@@ -633,7 +687,7 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
             )
 
     started_monotonic = time.monotonic()
-    store.upsert(sandbox_name, status="running", started_at=_utc_now(), finished_at=None)
+    store.upsert(sandbox_name, status="running", started_at=_utc_now(), **_ATTEMPT_RESET)
 
     _await_and_finalize(
         config,
@@ -689,7 +743,7 @@ def resume_job(
     feature = features.get(job["feature_id"])
     if feature is None:
         raise CommandError(f"Feature '{job['feature_id']}' not found in the loaded features file.")
-    spec = find_spec_for_sandbox(config, feature, sandbox_name)
+    spec = spec_for_job(config, store, feature, sandbox_name)
     profile = config.agent_profiles.get(spec.agent_id)
 
     prompt = build_resume_prompt(human_answer, config.status_file)
@@ -705,7 +759,9 @@ def resume_job(
         resume=True,
     )
     started_monotonic = time.monotonic()
-    store.upsert(sandbox_name, status="running", detail=None, started_at=_utc_now())
+    store.upsert(
+        sandbox_name, status="running", detail=None, started_at=_utc_now(), **_ATTEMPT_RESET
+    )
 
     _await_and_finalize(
         config,
@@ -759,7 +815,7 @@ def plan_respawn(
     feature = features.get(job["feature_id"])
     if feature is None:
         raise CommandError(f"Feature '{job['feature_id']}' not found in the loaded features file.")
-    spec = find_spec_for_sandbox(config, feature, sandbox_name)
+    spec = spec_for_job(config, store, feature, sandbox_name)
 
     status = job["status"]
     if sbx_exists(sandbox_name):
@@ -806,7 +862,9 @@ def _respawn_in_place(config: Config, feature: Feature, spec: AgentSpec, sandbox
         resume=True,
     )
     started_monotonic = time.monotonic()
-    store.upsert(sandbox_name, status="running", detail=None, started_at=_utc_now())
+    store.upsert(
+        sandbox_name, status="running", detail=None, started_at=_utc_now(), **_ATTEMPT_RESET
+    )
 
     _await_and_finalize(
         config,

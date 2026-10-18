@@ -28,7 +28,8 @@ export type FeaturesAction =
     }
   | { type: "setAgentSkipPermissions"; index: number; agentIndex: number; value: boolean | null }
   | { type: "setAgentEnv"; index: number; agentIndex: number; env: Record<string, string> }
-  | { type: "setAgentKit"; index: number; agentIndex: number; kit: string[] };
+  | { type: "setAgentKit"; index: number; agentIndex: number; kit: string[] }
+  | { type: "syncFeatures"; previous: FeatureInput[]; next: FeatureInput[] };
 
 export function emptyFeature(): FeatureInput {
   return { id: "", description: "", acceptance_criteria: [], agents: [] };
@@ -73,6 +74,34 @@ function orNull(value: string): string | null {
   return value.trim() === "" ? null : value;
 }
 
+/** Carries saved feature changes into rows that were copied from them.
+ *
+ * A row whose agents still match what the old feature had was never
+ * customised, so it takes the new feature's agents. A row that was edited
+ * keeps its edits. A row whose feature no longer exists is cleared, since it
+ * could only launch a run the server would reject.
+ */
+function syncFeatures(
+  rows: FeatureInput[],
+  previous: FeatureInput[],
+  next: FeatureInput[],
+): FeatureInput[] {
+  return rows.map((row) => {
+    if (row.id === "") return row;
+
+    const updated = next.find((f) => f.id === row.id);
+
+    if (updated === undefined) return emptyFeature();
+
+    const before = previous.find((f) => f.id === row.id);
+
+    const untouched =
+      before !== undefined && JSON.stringify(before.agents) === JSON.stringify(row.agents);
+
+    return untouched && updated.agents.length > 0 ? { ...row, agents: updated.agents } : row;
+  });
+}
+
 export function featuresReducer(
   state: FeatureInput[],
   action: FeaturesAction,
@@ -114,11 +143,15 @@ export function featuresReducer(
       }));
     case "setAgentField":
       return mapFeature(state, action.index, (f) =>
-        mapAgent(f, action.agentIndex, (a) => ({
-          ...a,
-          [action.field]:
-            action.field === "agent_id" ? action.value : orNull(action.value),
-        })),
+        mapAgent(f, action.agentIndex, (a) =>
+          action.field === "agent_id"
+            ? // A model belongs to one vendor's CLI, so it can't carry over to
+              // another agent. Cleared, the field falls back to the new
+              // agent's default and its suggestions are no longer filtered
+              // down to the stale name.
+              { ...a, agent_id: action.value, model: action.value === a.agent_id ? a.model : null }
+            : { ...a, [action.field]: orNull(action.value) },
+        ),
       );
     case "setAgentSkipPermissions":
       return mapFeature(state, action.index, (f) =>
@@ -135,6 +168,8 @@ export function featuresReducer(
       return mapFeature(state, action.index, (f) =>
         mapAgent(f, action.agentIndex, (a) => ({ ...a, kit: action.kit })),
       );
+    case "syncFeatures":
+      return syncFeatures(state, action.previous, action.next);
     default:
       return state;
   }

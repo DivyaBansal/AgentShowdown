@@ -182,6 +182,16 @@ class StateStore:
             )
             """
         )
+        # Kept out of `jobs` on purpose: job rows are served to the UI
+        # verbatim (`SELECT *`), and a spec's env can hold real tokens.
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job_specs (
+                sandbox_name TEXT PRIMARY KEY,
+                spec_json TEXT NOT NULL
+            )
+            """
+        )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_samples_sandbox ON samples (sandbox_name, ts)"
         )
@@ -376,6 +386,27 @@ class StateStore:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
+
+    def set_spec(self, sandbox_name: str, spec_json: str) -> None:
+        """Records the agent spec a job was launched with, replacing any earlier one.
+
+        Args:
+            sandbox_name: The job's sandbox.
+            spec_json: The serialized AgentSpec (see config.spec_to_json).
+        """
+        self.conn.execute(
+            "INSERT INTO job_specs (sandbox_name, spec_json) VALUES (?, ?) "
+            "ON CONFLICT(sandbox_name) DO UPDATE SET spec_json = excluded.spec_json",
+            (sandbox_name, spec_json),
+        )
+        self.conn.commit()
+
+    def get_spec(self, sandbox_name: str) -> str | None:
+        """Returns the serialized spec recorded by `set_spec`, or None if there is none."""
+        row = self.conn.execute(
+            "SELECT spec_json FROM job_specs WHERE sandbox_name = ?", (sandbox_name,)
+        ).fetchone()
+        return row[0] if row else None
 
     def get(self, sandbox_name: str) -> dict | None:
         """Fetches one job row by sandbox_name, or None if unknown."""

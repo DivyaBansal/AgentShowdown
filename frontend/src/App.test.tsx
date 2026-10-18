@@ -147,6 +147,24 @@ describe("App sections", () => {
     expect(screen.getByRole("heading", { name: /features/i })).toBeInTheDocument();
   });
 
+  it("keeps unsaved Setup edits across a trip to Compare", async () => {
+    stubApi({
+      "/api/features": {
+        features: [{ id: "f1", description: "old", acceptance_criteria: [], agents: [] }],
+      },
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /setup/i }));
+    const description = await screen.findByLabelText(/^description$/i);
+    fireEvent.change(description, { target: { value: "edited" } });
+
+    fireEvent.click(screen.getByRole("tab", { name: /compare/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /setup/i }));
+
+    expect(screen.getByLabelText(/^description$/i)).toHaveValue("edited");
+  });
+
   it("offers a repo filter only when jobs span more than one repo", async () => {
     stubApi({
       "/api/jobs": {

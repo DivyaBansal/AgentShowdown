@@ -141,6 +141,42 @@ describe("ConfigEditor", () => {
     );
   });
 
+  it("swaps the default model for the new agent's own when the agent changes", async () => {
+    stub();
+    const agent = {
+      requires_command: false,
+      accepts_model: true,
+      supports_skip_permissions: true,
+      verified: true,
+      reports_token_usage: true,
+    };
+    render(
+      <ConfigEditor
+        reloadKey={0}
+        agents={[
+          {
+            ...agent,
+            agent_id: "claude",
+            known_models: ["claude-haiku-4-5"],
+            default_model: "claude-haiku-4-5",
+          },
+          { ...agent, agent_id: "codex", known_models: ["gpt-5-codex"], default_model: "gpt-5-codex" },
+        ]}
+      />,
+    );
+
+    fireEvent.change(await screen.findByLabelText(/default agent/i), {
+      target: { value: "codex" },
+    });
+
+    expect(screen.getByLabelText(/default model/i)).toHaveValue("gpt-5-codex");
+    // A fresh list, not the claude one with its options swapped.
+    const listId = screen.getByLabelText(/default model/i).getAttribute("list");
+    const options = [...(document.getElementById(listId ?? "")?.querySelectorAll("option") ?? [])];
+    expect(listId).toContain("codex");
+    expect(options.map((o) => o.value)).toEqual(["gpt-5-codex"]);
+  });
+
   it("reports the loaded document and marks it saved after a save", async () => {
     stub({ ...DOC, exists: false });
     const docs: boolean[] = [];

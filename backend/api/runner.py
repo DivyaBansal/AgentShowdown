@@ -28,12 +28,12 @@ from backend.orchestrator.config import AgentSpec
 from backend.orchestrator.events import bus
 from backend.orchestrator.job import (
     expand_jobs,
-    find_spec_for_sandbox,
     plan_respawn,
     reattach_job,
     respawn_job,
     run_all,
     sandbox_name_for,
+    spec_for_job,
 )
 from backend.orchestrator.process import CommandError
 from backend.orchestrator.sbx import sbx_list
@@ -465,7 +465,7 @@ def reattach_in_flight_jobs(config: Config, features: dict[str, Feature]) -> tup
                 )
                 continue
             try:
-                spec = find_spec_for_sandbox(config, feature, sandbox_name)
+                spec = spec_for_job(config, store, feature, sandbox_name)
             except CommandError:
                 log.warning("reattach_skipped_unmatched_spec", sandbox_name=sandbox_name)
                 continue

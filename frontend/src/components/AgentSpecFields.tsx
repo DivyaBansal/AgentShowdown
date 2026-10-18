@@ -7,9 +7,16 @@
  * `model` is a free-text input backed by a datalist rather than a closed
  * select: a custom endpoint serves whatever model names it likes, which the
  * server's KNOWN_MODELS list cannot know ahead of time.
+ *
+ * "Local Ollama model" is a preset over `env`, not a separate setting: it
+ * writes the variables that point claude at the host's Ollama and swaps the
+ * model suggestions for what Ollama has pulled. Clearing it removes exactly
+ * those variables and leaves any others alone.
  */
 
-import type { AgentInfo, AgentSpec } from "../api";
+import { useEffect, useState } from "react";
+import { fetchOllamaModels, type AgentInfo, type AgentSpec, type OllamaModels } from "../api";
+import { supportsOllamaPreset, usesOllama, withOllama, withoutOllama } from "../lib/ollama";
 import type { FeaturesAction } from "./featuresReducer";
 import { Field } from "./ui/Field";
 
@@ -28,13 +35,49 @@ export function AgentSpecFields({
 }) {
   const envPairs = Object.entries(agent.env ?? {});
   const known = agents.find((a) => a.agent_id === agent.agent_id);
-  const listId = `models-${index}-${agentIndex}`;
   // An agent absent from /agents is one this build doesn't know. Offering
   // every field is the safer guess there than hiding them all.
   const acceptsModel = known?.accepts_model ?? true;
   const requiresCommand = known?.requires_command ?? false;
   const supportsSkipPermissions = known?.supports_skip_permissions ?? true;
   const commandId = `command-${index}-${agentIndex}`;
+  const offersOllama = acceptsModel && supportsOllamaPreset(agent.agent_id);
+  const ollama = offersOllama && usesOllama(agent.env);
+
+  // The id names the suggestion source, not just the row: Chromium keeps
+  // showing a datalist's old options when they are swapped in place, so a
+  // new agent (or the Ollama preset) has to point the input at a new list.
+  const listId = `models-${index}-${agentIndex}-${agent.agent_id.replace(/[^\w-]/g, "_")}${
+    ollama ? "-ollama" : ""
+  }`;
+
+  const [ollamaModels, setOllamaModels] = useState<OllamaModels | null>(null);
+
+  // Asked only once the preset is on: most agents never use it, and each
+  // ask shells out to `ollama list` on the host.
+  useEffect(() => {
+    if (!ollama || ollamaModels !== null) return;
+    let cancelled = false;
+    fetchOllamaModels()
+      .catch((): OllamaModels => ({ available: false, models: [] }))
+      .then((result) => {
+        if (!cancelled) setOllamaModels(result);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ollama, ollamaModels]);
+
+  const suggestions = ollama ? (ollamaModels?.models ?? []) : (known?.known_models ?? []);
+  let modelHint: string | undefined;
+  if (ollama) {
+    modelHint =
+      ollamaModels === null || ollamaModels.available
+        ? "Models pulled into this machine's Ollama."
+        : "Couldn't list Ollama's models -- type the name as `ollama list` shows it.";
+  } else if ((known?.known_models.length ?? 0) > 0) {
+    modelHint = "Any name is accepted once a base-URL variable points the agent elsewhere.";
+  }
 
   const commandField = (
     <Field
@@ -71,6 +114,23 @@ export function AgentSpecFields({
     // would otherwise vanish before it could be typed into. They are stripped
     // when the feature list is saved.
     dispatch({ type: "setAgentEnv", index, agentIndex, env: Object.fromEntries(pairs) });
+  }
+
+  function toggleOllama(on: boolean) {
+    // A model that only one side serves can't survive the switch: a claude
+    // name means nothing to Ollama, and an Ollama tag fails the known-model
+    // check once the endpoint is gone. Either way, start the field over.
+    const isKnown = agent.model !== null && (known?.known_models ?? []).includes(agent.model);
+    const keepModel = agent.model !== null && (on ? !isKnown : isKnown);
+    if (agent.model !== null && !keepModel) {
+      dispatch({ type: "setAgentField", index, agentIndex, field: "model", value: "" });
+    }
+    dispatch({
+      type: "setAgentEnv",
+      index,
+      agentIndex,
+      env: on ? withOllama(agent.env, keepModel ? agent.model : null) : withoutOllama(agent.env),
+    });
   }
 
   return (
@@ -113,33 +173,52 @@ export function AgentSpecFields({
           <Field
             id={`model-${index}-${agentIndex}`}
             label="Model"
-            hint={
-              (known?.known_models.length ?? 0) > 0
-                ? "Any name is accepted once a base-URL variable points the agent elsewhere."
-                : undefined
-            }
+            hint={modelHint}
           >
             <input
               id={`model-${index}-${agentIndex}`}
               list={listId}
               value={agent.model ?? ""}
-              onChange={(e) =>
+              onChange={(e) => {
                 dispatch({
                   type: "setAgentField",
                   index,
                   agentIndex,
                   field: "model",
                   value: e.target.value,
-                })
-              }
-              placeholder={known?.default_model ?? "Model name"}
+                });
+                // Background calls follow the chosen model, or they would
+                // ask Ollama for a claude model it doesn't serve.
+                if (ollama) {
+                  dispatch({
+                    type: "setAgentEnv",
+                    index,
+                    agentIndex,
+                    env: withOllama(agent.env, e.target.value.trim() || null),
+                  });
+                }
+              }}
+              placeholder={ollama ? "e.g. qwen3.5:122b" : (known?.default_model ?? "Model name")}
             />
-            <datalist id={listId}>
-              {(known?.known_models ?? []).map((m) => (
+            <datalist key={listId} id={listId}>
+              {suggestions.map((m) => (
                 <option key={m} value={m} />
               ))}
             </datalist>
           </Field>
+        )}
+
+        {offersOllama && (
+          <div className="checks checks--field">
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={ollama}
+                onChange={(e) => toggleOllama(e.target.checked)}
+              />
+              Local Ollama model
+            </label>
+          </div>
         )}
 
         <Field id={`run-label-${index}-${agentIndex}`} label="Run label">

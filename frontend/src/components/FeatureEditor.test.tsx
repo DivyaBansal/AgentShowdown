@@ -110,8 +110,12 @@ describe("FeatureEditor", () => {
     });
     fireEvent.submit(screen.getByRole("button", { name: /save features/i }).closest("form")!);
 
-    await waitFor(() => expect(mock).toHaveBeenCalled());
-    const body = JSON.parse(String(mock.mock.calls[0]?.[1]?.body)) as {
+    // That base URL also switches on the Ollama preset, which lists models
+    // with a GET of its own -- so find the save among the calls.
+    const saveCall = () =>
+      mock.mock.calls.find((call) => (call[1] as RequestInit | undefined)?.body !== undefined);
+    await waitFor(() => expect(saveCall()).toBeDefined());
+    const body = JSON.parse(String((saveCall()?.[1] as RequestInit).body)) as {
       features: { id: string; agents: { env: Record<string, string> }[] }[];
     };
     expect(body.features[0]?.id).toBe("add-verbs");

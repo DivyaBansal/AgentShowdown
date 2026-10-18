@@ -199,6 +199,17 @@ export async function fetchAgents(): Promise<AgentInfo[]> {
   return (await request<{ agents: AgentInfo[] }>("/agents")).agents;
 }
 
+export interface OllamaModels {
+  /** False when the host has no Ollama or it isn't answering. */
+  available: boolean;
+  models: string[];
+}
+
+/** Models pulled into the host's Ollama, offered as model suggestions. */
+export async function fetchOllamaModels(): Promise<OllamaModels> {
+  return request<OllamaModels>("/ollama/models");
+}
+
 export async function fetchFeatures(): Promise<Feature[]> {
   return (await request<{ features: Feature[] }>("/features")).features;
 }
