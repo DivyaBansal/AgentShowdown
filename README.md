@@ -106,7 +106,11 @@ features:
 - Access to a model for each agent you compare. Inside a sandbox, agents don't
   use your host logins. Give them either:
   - an API key, stored with sbx: `sbx secret set anthropic` for `claude`,
-    `sbx secret set openai` for `codex` (see `sbx secret set --help` for others), or
+    `sbx secret set openai` for `codex` (see `sbx secret set --help` for others),
+  - your subscription account: run the agent in a sandbox once (`sbx run claude`
+    or `sbx run codex`), sign in with `/login`, then exit. sbx keeps the login as
+    a global secret (`sbx secret ls` shows it as `oauth configured`) and new
+    sandboxes reuse it, or
   - a local [Ollama](https://ollama.com) model, through the agent's `env` (see
     [Configuration](#configuration)).
 - Node 22 for the web UI
