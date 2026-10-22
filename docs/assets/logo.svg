@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="3 3 18 18">
+  <!-- The agentshowdown mark (frontend/src/components/BrandMark.tsx), standalone:
+       the gap at the cross is a mask rather than a surface-coloured stroke, so it
+       works on any background. -->
+  <style>
+    .s1 { fill: #2a78d6; } .s2 { fill: #d2551f; }
+    @media (prefers-color-scheme: dark) { .s1 { fill: #5b9df0; } .s2 { fill: #e8763d; } }
+  </style>
+  <defs>
+    <g id="gladius">
+      <path d="M12 2.2 13.4 4.8V15h-2.8V4.8Z"/>
+      <rect x="8.4" y="15" width="7.2" height="1.9" rx="0.95"/>
+      <rect x="11" y="16.9" width="2" height="3.4"/>
+      <circle cx="12" cy="21.3" r="1.5"/>
+    </g>
+    <mask id="gap" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+      <rect width="24" height="24" fill="#fff"/>
+      <use href="#gladius" transform="rotate(45 12 12)" fill="#000" stroke="#000" stroke-width="1.4"/>
+    </mask>
+  </defs>
+  <g mask="url(#gap)"><use href="#gladius" class="s1" transform="rotate(-45 12 12)"/></g>
+  <use href="#gladius" class="s2" transform="rotate(45 12 12)"/>
+</svg>
