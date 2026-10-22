@@ -1,0 +1,48 @@
+# Does a UI skill change what an agent builds? Same agent, same model, same
+# prompt; the only difference between `plain` and `with-skill` is the
+# frontend-design skill kit (kits/frontend-design), which ships the skill to
+# both Claude Code's and Codex's skill directories. One feature per agent/model
+# so each pair can be run on its own:
+#
+#   uv run python -m backend.orchestrator --config demo/langlearn/config.yaml \
+#     --features demo/langlearn/features-ui-skill.yaml run --feature-id build-ui-haiku
+#
+# Kit paths are relative to the repo root, which is where the orchestrator runs.
+
+features:
+  - id: build-ui-haiku
+    description: Build a UI for this terminal app.
+    acceptance_criteria: &criteria
+      - german-terminal-practice.sh still works unchanged from the terminal.
+      - tests/test_german_practice.sh still passes.
+    agents:
+      - agent_id: claude
+        model: claude-haiku-5-5
+        run_label: plain
+      - agent_id: claude
+        model: claude-haiku-5-5
+        run_label: with-skill
+        kit: [./demo/langlearn/kits/frontend-design]
+
+  - id: build-ui-sonnet
+    description: Build a UI for this terminal app.
+    acceptance_criteria: *criteria
+    agents:
+      - agent_id: claude
+        model: claude-sonnet-5-5
+        run_label: plain
+      - agent_id: claude
+        model: claude-sonnet-5-5
+        run_label: with-skill
+        kit: [./demo/langlearn/kits/frontend-design]
+
+  - id: build-ui-codex
+    description: Build a UI for this terminal app.
+    acceptance_criteria: *criteria
+    # No model: codex uses its own default.
+    agents:
+      - agent_id: codex
+        run_label: plain
+      - agent_id: codex
+        run_label: with-skill
+        kit: [./demo/langlearn/kits/frontend-design]

@@ -1,0 +1,9 @@
+schemaVersion: "1"
+kind: mixin
+name: frontend-design-skill
+displayName: frontend-design skill
+description: >
+  Ships Anthropic's frontend-design skill (github.com/anthropics/skills,
+  Apache-2.0) into the sandbox workspace as a project skill for both
+  Claude Code (.claude/skills) and Codex (.agents/skills), so a with-skill
+  run can be compared against a plain one.

@@ -44,6 +44,11 @@ run:
   telemetry: false
   telemetry_interval_seconds: 5
 
+  # Where sandboxed claude/codex send their OpenTelemetry events: this
+  # server, as seen from inside a sandbox. Match the port uvicorn runs on;
+  # null turns export off.
+  agent_otel_endpoint: "http://host.docker.internal:8000"
+
   remove_sandbox_on_success: true
   remove_sandbox_on_failure: true
 
