@@ -1,0 +1,40 @@
+/* The agent timeline: one row per step, offset from the first event.
+ *
+ * Offsets get a fixed column so the rows line up into a readable column of
+ * times. A failed step is marked in its chip's text as well as its colour.
+ */
+
+.timeline > li {
+  align-items: baseline;
+}
+
+.timeline__at {
+  min-width: 4.5ch;
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
+.timeline .list__main.mono {
+  font-size: var(--text-sm);
+}
+
+.timeline__tools {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.timeline__tools th,
+.timeline__tools td {
+  padding: var(--space-1) var(--space-4) var(--space-1) 0;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline__tools thead th {
+  color: var(--text-3);
+  font-weight: 600;
+}
+
+.timeline__tools td {
+  text-align: right;
+}
