@@ -10,6 +10,7 @@ dependencies = [
     "opentelemetry-api>=1.44.0",
     "uvicorn[standard]>=0.52.4",
     "pyyaml>=6.0.3",
+    "httpx>=0.28.1",
 ]
 
 [dependency-groups]
@@ -21,7 +22,6 @@ dev = [
     "ty>=0.0.1a14",
     "ruff>=0.7",
     "pip-audit>=2.7",
-    "httpx>=0.28.1",
 ]
 
 [build-system]
