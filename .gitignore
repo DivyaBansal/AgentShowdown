@@ -12,3 +12,5 @@ coverage.xml
 frontend/dist/
 frontend/node_modules/
 graphify-out/
+.agents/
+.archify/
