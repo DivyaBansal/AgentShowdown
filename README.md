@@ -24,6 +24,19 @@ Don't rely on the hype.</b>
 > `codex` are verified end to end; other agents are best-effort. Only tested on
 > Linux (see [Platform and sizing](#platform-and-sizing)).
 
+<table>
+  <tr>
+    <td><img src="demo/.screenshots/setup.png" alt="Setup tab: repository, configuration, secrets and features" width="640"></td>
+    <td><img src="demo/.screenshots/start_run.png" alt="New showdown form: pick features and agents, sandbox CPU and memory, then start the run" width="640"></td>
+    <td><img src="demo/.screenshots/compare.png" alt="Standings table and head-to-head charts of duration, tokens and diff size per agent" width="640"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>1. Setup</b></td>
+    <td align="center"><b>2. Start a run</b></td>
+    <td align="center"><b>3. Compare</b></td>
+  </tr>
+</table>
+
 ## Why?
 
 You get one interface to run any model + agent combination in a sandbox and
