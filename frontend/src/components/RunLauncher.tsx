@@ -57,6 +57,9 @@ export function RunLauncher({
   const [telemetry, setTelemetry] = useState(false);
   const [verifyOn, setVerifyOn] = useState<VerifyOn>("host");
   const [openPr, setOpenPr] = useState(false);
+  // Kept as typed; blank means "sbx's default" and is left out of the request.
+  const [cpus, setCpus] = useState("");
+  const [memory, setMemory] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -103,6 +106,8 @@ export function RunLauncher({
         telemetry,
         verify_on: verifyOn,
         open_pr: openPr,
+        ...(cpus !== "" && { cpus: Number(cpus) }),
+        ...(memory.trim() !== "" && { memory: memory.trim() }),
       });
 
       const count = result.run_ids.length;
@@ -185,6 +190,23 @@ export function RunLauncher({
               <option value="host">host (cheaper)</option>
               <option value="sandbox">sandbox</option>
             </select>
+          </Field>
+          <Field id="sandbox-cpus" label="CPUs per sandbox" hint="Blank: every host CPU.">
+            <input
+              id="sandbox-cpus"
+              type="number"
+              min={1}
+              step={1}
+              value={cpus}
+              onChange={(e) => setCpus(e.target.value)}
+            />
+          </Field>
+          <Field
+            id="sandbox-memory"
+            label="Memory per sandbox"
+            hint="e.g. 4g. Blank: half the host's."
+          >
+            <input id="sandbox-memory" value={memory} onChange={(e) => setMemory(e.target.value)} />
           </Field>
           <div className="checks checks--field">
             <label className="check">

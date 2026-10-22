@@ -11,10 +11,16 @@ export function useNow(active: boolean, intervalMs = 1000): number {
 
   useEffect(() => {
     if (!active) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), intervalMs);
+    const tick = () => setNow(Date.now());
+    // Tick once straight away so a clock that was paused while inactive
+    // doesn't show a stale time for a whole interval.
+    const first = setTimeout(tick, 0);
+    const timer = setInterval(tick, intervalMs);
 
-    return () => clearInterval(timer);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
   }, [active, intervalMs]);
 
   return now;

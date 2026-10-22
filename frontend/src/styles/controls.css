@@ -266,6 +266,18 @@ progress {
 .chip--danger { color: var(--danger-ink); background: var(--danger-wash); }
 .chip--active { color: var(--accent-ink); background: var(--accent-wash); }
 
+/* A working job is live, not just a different colour -- the dot pulses so
+   "active" reads as "something is happening right now" at a glance.
+   `prefers-reduced-motion` is handled globally (base.css), not here. */
+@keyframes chip-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.chip--active::before {
+  animation: chip-pulse 1.6s ease-in-out infinite;
+}
+
 /* --- notices ----------------------------------------------------------- */
 
 .notice {

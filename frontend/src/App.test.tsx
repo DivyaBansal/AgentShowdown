@@ -44,6 +44,7 @@ function stubApi(overrides: Routes = {}) {
     "/api/sandboxes": { sandboxes: [] },
     "/api/jobs": { jobs: [JOB] },
     "/api/workspaces": { active: null, workspaces: [] },
+    "/api/ask/providers": { providers: [] },
     ...overrides,
   } satisfies Routes;
 
@@ -148,6 +149,17 @@ describe("App sections", () => {
 
     expect(await screen.findByRole("heading", { name: /^repository$/i })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /features/i })).toBeInTheDocument();
+  });
+
+  it("switches to the ask view", async () => {
+    stubApi();
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /^ask$/i }));
+
+    expect(screen.getByRole("tab", { name: /^ask$/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: /^ask$/i })).toBeVisible();
+    expect(screen.getByLabelText(/question/i)).toBeInTheDocument();
   });
 
   it("keeps unsaved Setup edits across a trip to Compare", async () => {

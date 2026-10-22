@@ -35,6 +35,12 @@ function job(agent_id: string, run_label: string | null = null): Job {
     num_turns: null,
     repo: null,
     log_tail: null,
+    launch_s: null,
+    agent_s: null,
+    verify_s: null,
+    push_s: null,
+    failure_category: null,
+    question_options: null,
   };
 }
 

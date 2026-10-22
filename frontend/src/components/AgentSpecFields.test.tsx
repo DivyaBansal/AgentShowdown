@@ -174,8 +174,8 @@ describe("AgentSpecFields", () => {
       });
     });
 
-    it("suggests the models Ollama has pulled", async () => {
-      stubOllama({ available: true, models: ["qwen3.5:122b", "gemma4:31b"] });
+    it("suggests the saved Ollama models", async () => {
+      stubOllama({ available: true, models: ["qwen3.5:122b", "gemma4:31b"], model_source: "cli" });
 
       fields({ agent_id: "claude", model: "qwen3.5:122b", env: ollamaEnv });
 
@@ -190,7 +190,7 @@ describe("AgentSpecFields", () => {
 
       await waitFor(() => expect(optionValues()).toContain("gemma4:31b"));
       expect(optionValues()).not.toContain("claude-sonnet-5");
-      expect(screen.getByText(/models pulled into this machine's ollama/i)).toBeInTheDocument();
+      expect(screen.getByText(/Updated suggestions/i)).toBeInTheDocument();
     });
 
     it("says so when Ollama can't be listed", async () => {

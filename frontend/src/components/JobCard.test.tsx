@@ -30,6 +30,12 @@ function job(overrides: Partial<Job> = {}): Job {
     num_turns: 4,
     repo: null,
     log_tail: null,
+    launch_s: null,
+    agent_s: null,
+    verify_s: null,
+    push_s: null,
+    failure_category: null,
+    question_options: null,
     ...overrides,
   };
 }
@@ -40,6 +46,54 @@ describe("JobCard", () => {
     expect(screen.getByLabelText(/arena-f1-claude/i)).toBeInTheDocument();
     expect(screen.getByText("succeeded")).toBeInTheDocument();
     expect(screen.getByText("980")).toBeInTheDocument(); // 900 + 80
+  });
+
+  it("shows the agent's status message as the activity line", () => {
+    render(
+      <JobCard
+        job={job({ status: "awaiting_input", detail: "which option?" })}
+        color="c"
+      />,
+    );
+    expect(screen.getByText("which option?")).toBeInTheDocument();
+  });
+
+  it("puts a reply box right on a card whose agent is waiting", () => {
+    render(
+      <JobCard
+        job={job({ status: "awaiting_input", detail: "which option?" })}
+        color="c"
+      />,
+    );
+
+    expect(screen.getByLabelText(/your answer/i)).toBeInTheDocument();
+    // The question is the activity line; the form doesn't repeat it.
+    expect(screen.getAllByText("which option?")).toHaveLength(1);
+  });
+
+  it("keeps the reply box off cards that aren't waiting", () => {
+    render(<JobCard job={job({ status: "succeeded" })} color="c" />);
+    expect(screen.queryByLabelText(/your answer/i)).not.toBeInTheDocument();
+  });
+
+  it("falls back to the last output line when there's no status message yet", () => {
+    render(
+      <JobCard
+        job={job({ status: "running", detail: null, log_tail: "building...\nrunning tests\n" })}
+        color="c"
+      />,
+    );
+    expect(screen.getByText("running tests")).toBeInTheDocument();
+  });
+
+  it("shows no activity line when there's nothing to report yet", () => {
+    // No accessible role distinguishes this paragraph from the rest of the
+    // card, so this is the documented class-query exception.
+    const { container } = render(
+      <JobCard job={job({ detail: null, log_tail: null })} color="c" />,
+    );
+
+    expect(container.querySelector(".job-card__activity")).not.toBeInTheDocument();
   });
 
   it("renders an unreported metric as 'not reported', never as zero", () => {

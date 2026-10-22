@@ -16,12 +16,14 @@ import { PreflightBanner } from "./components/PreflightBanner";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { useJobStream } from "./hooks/useJobStream";
 import { useTheme } from "./hooks/useTheme";
+import { AskView } from "./views/AskView";
 import { CompareView } from "./views/CompareView";
 import { SetupView } from "./views/SetupView";
 
-type Tab = "compare" | "setup";
+type Tab = "compare" | "ask" | "setup";
 
 export function App() {
+  const [modelsRevision, setModelsRevision] = useState(0);
   const { jobs, connected, error, refresh } = useJobStream();
   const [tab, setTab] = useState<Tab>("compare");
   const [theme, setTheme] = useTheme();
@@ -65,7 +67,7 @@ export function App() {
             <h1>AgentShowdown</h1>
           </div>
 
-          {/* A tab strip rather than a router: two views do not justify a new
+          {/* A tab strip rather than a router: three views do not justify a new
               dependency and a URL scheme. */}
           <nav role="tablist" aria-label="Sections">
             <button
@@ -75,6 +77,14 @@ export function App() {
               onClick={() => setTab("compare")}
             >
               Compare
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "ask"}
+              onClick={() => setTab("ask")}
+            >
+              Ask
             </button>
             <button
               type="button"
@@ -118,11 +128,18 @@ export function App() {
             loadSandboxes={loadSandboxes}
           />
         </div>
+        <div role="tabpanel" className="tab-panel" aria-label="Ask" hidden={tab !== "ask"}>
+          <AskView modelsRevision={modelsRevision} />
+        </div>
         <div role="tabpanel" className="tab-panel" aria-label="Setup" hidden={tab !== "setup"}>
           <SetupView
             features={features}
             agents={agents}
             workspaces={workspaces}
+            onModelsUpdated={() => {
+              fetchAgents().then(setAgents).catch(() => setAgents([]));
+              setModelsRevision((revision) => revision + 1);
+            }}
             onChanged={() => {
               loadWorkspaceData();
               refresh();

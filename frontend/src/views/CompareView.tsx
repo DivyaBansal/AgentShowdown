@@ -5,26 +5,28 @@
  * sits collapsed at the bottom because it is occasional and destructive.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
-  fetchSamples,
   type AgentInfo,
   type Feature,
   type Job,
   type Preflight,
-  type Sample,
   type SandboxSummary,
 } from "../api";
 import { ComparisonSpread } from "../charts/ComparisonSpread";
 import { TelemetryChart } from "../charts/TelemetryChart";
 import { assignSeriesColorsFor } from "../charts/palette";
-import { JobCard } from "../components/JobCard";
+import { AgentTimeline } from "../components/AgentTimeline";
+import { GroupedJobs } from "../components/GroupedJobs";
+import { LogView } from "../components/LogView";
+import { ReplyForm } from "../components/ReplyForm";
 import { RunLauncher } from "../components/RunLauncher";
 import { SandboxControls } from "../components/SandboxControls";
 import { Standings } from "../components/Standings";
 import { Notice } from "../components/ui/Notice";
 import { Panel } from "../components/ui/Panel";
 import { StatusChip } from "../components/ui/StatusChip";
+import { useSamples } from "../hooks/useSamples";
 
 /** The last path segment, so a long absolute path stays readable in a cell. */
 function repoLabel(repo: string | null): string {
@@ -53,19 +55,14 @@ export function CompareView({
   onLaunched: () => void;
   loadSandboxes: () => void;
 }) {
-  const [selected, setSelected] = useState<Job | null>(null);
-  const [samples, setSamples] = useState<Sample[]>([]);
+  // Only the name is kept in state, not the Job snapshot itself: `jobs`
+  // keeps arriving over SSE (including live log_tail updates), and looking
+  // the job up fresh every render is what keeps the inspect panel's output
+  // actually live instead of frozen at the moment it was opened.
+  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const samples = useSamples(selectedName);
   const [repoFilter, setRepoFilter] = useState("");
-
-  useEffect(() => {
-    if (selected === null) {
-      setSamples([]);
-
-      return;
-    }
-
-    fetchSamples(selected.sandbox_name).then(setSamples).catch(() => setSamples([]));
-  }, [selected]);
+  const selectedJob = jobs.find((j) => j.sandbox_name === selectedName) ?? null;
 
   // One database now holds every workspace's history, so the board needs a
   // way to narrow to the repo in hand.
@@ -141,34 +138,42 @@ export function CompareView({
       </section>
 
       {visible.length > 0 && (
-        <section className="stack stack--tight" aria-labelledby="contenders-title">
-          <h2 id="contenders-title" className="eyebrow">
-            Contenders
-          </h2>
-          <div className="job-grid">
-            {visible.map((job) => (
-              <JobCard
-                key={job.sandbox_name}
-                job={job}
-                color={colorFor(job)}
-                onSelect={setSelected}
-              />
-            ))}
-          </div>
-        </section>
+        <GroupedJobs
+          jobs={visible}
+          colorFor={colorFor}
+          onSelect={(job) => setSelectedName(job.sandbox_name)}
+        />
       )}
 
-      {selected && (
+      {selectedJob && (
         <section className="surface">
           <div className="surface__head">
-            <h2 className="mono">{selected.sandbox_name}</h2>
-            <button type="button" className="btn--quiet" onClick={() => setSelected(null)}>
+            <h2 className="mono">{selectedJob.sandbox_name}</h2>
+            <button type="button" className="btn--quiet" onClick={() => setSelectedName(null)}>
               Close
             </button>
           </div>
-          <div className="surface__body">
+          <div className="surface__body stack">
+            {/* The peek panel: the one place to reply to a job, then see
+                what it's doing. Keyed per job so a half-typed reply never
+                carries over to the next one opened. */}
+            <ReplyForm key={selectedJob.sandbox_name} job={selectedJob} />
             <TelemetryChart samples={samples} enabled={samples.length > 0} />
-            {selected.detail && <pre className="log">{selected.detail}</pre>}
+            {/* For a waiting job the detail *is* the question, already
+                shown by the reply form. */}
+            {selectedJob.detail && selectedJob.status !== "awaiting_input" && (
+              <pre className="log">{selectedJob.detail}</pre>
+            )}
+            <AgentTimeline
+              key={`timeline-${selectedJob.sandbox_name}`}
+              sandboxName={selectedJob.sandbox_name}
+              live={selectedJob.status === "running" || selectedJob.status === "queued"}
+            />
+            <LogView
+              key={selectedJob.sandbox_name}
+              sandboxName={selectedJob.sandbox_name}
+              tail={selectedJob.log_tail}
+            />
           </div>
         </section>
       )}

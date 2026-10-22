@@ -131,6 +131,36 @@ describe("RunLauncher", () => {
     });
   });
 
+  it("sends per-sandbox CPU and memory limits when they are set", async () => {
+    const fetchMock = okFetch({ run_ids: ["run-abc123"] });
+    launcher();
+
+    fireEvent.change(screen.getByLabelText(/^feature$/i), {
+      target: { value: "add-separable-verbs" },
+    });
+    fireEvent.change(screen.getByLabelText(/cpus per sandbox/i), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText(/memory per sandbox/i), { target: { value: " 4g " } });
+    fireEvent.click(screen.getByRole("button", { name: /start run/i }));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Started 1 run"));
+    expect(jsonBody(fetchInit(fetchMock))).toMatchObject({ cpus: 2, memory: "4g" });
+  });
+
+  it("leaves the limits to sbx when they are blank", async () => {
+    const fetchMock = okFetch({ run_ids: ["run-abc123"] });
+    launcher();
+
+    fireEvent.change(screen.getByLabelText(/^feature$/i), {
+      target: { value: "add-separable-verbs" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /start run/i }));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Started 1 run"));
+    const body = jsonBody(fetchInit(fetchMock));
+    expect(body).not.toHaveProperty("cpus");
+    expect(body).not.toHaveProperty("memory");
+  });
+
   it("fills a row with the feature's own agents when it is chosen", () => {
     launcher();
     fireEvent.change(screen.getByLabelText(/^feature$/i), {

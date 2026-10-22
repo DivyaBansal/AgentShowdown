@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { Job } from "../api";
 import {
+  canFollowUp,
   canRespawn,
   canStop,
   compareNullableAscending,
   elapsedSeconds,
   formatDiff,
   formatDuration,
+  groupJobs,
+  latestActivity,
   placements,
+  questionOptions,
+  stateBucket,
   statusTone,
   totalTokens,
 } from "./jobs";
@@ -39,6 +44,12 @@ function job(overrides: Partial<Job> = {}): Job {
     num_turns: null,
     repo: null,
     log_tail: null,
+    launch_s: null,
+    agent_s: null,
+    verify_s: null,
+    push_s: null,
+    failure_category: null,
+    question_options: null,
     ...overrides,
   };
 }
@@ -169,5 +180,126 @@ describe("elapsedSeconds", () => {
 
   it("falls back to the recorded duration when started_at is missing", () => {
     expect(elapsedSeconds(job({ status: "queued", duration_seconds: null }), startMs)).toBeNull();
+  });
+});
+
+describe("stateBucket", () => {
+  it("maps each status to its bucket", () => {
+    expect(stateBucket("awaiting_input")).toBe("needs_input");
+    expect(stateBucket("running")).toBe("working");
+    expect(stateBucket("queued")).toBe("working");
+    expect(stateBucket("stopped")).toBe("stopped");
+    expect(stateBucket("succeeded")).toBe("ready_for_review");
+    expect(stateBucket("crashed")).toBe("failed");
+    expect(stateBucket("tests_failed")).toBe("failed");
+  });
+
+  it("treats an unrecognized status as needing a look, not as silently fine", () => {
+    expect(stateBucket("something-new")).toBe("failed");
+  });
+});
+
+describe("groupJobs", () => {
+  it("groups by state in urgency order, omitting empty buckets", () => {
+    const groups = groupJobs(
+      [
+        job({ sandbox_name: "a", status: "succeeded" }),
+        job({ sandbox_name: "b", status: "awaiting_input" }),
+        job({ sandbox_name: "c", status: "running" }),
+      ],
+      "state",
+    );
+
+    expect(groups.map((g) => g.key)).toEqual(["needs_input", "working", "ready_for_review"]);
+    expect(groups.map((g) => g.jobs.map((j) => j.sandbox_name))).toEqual([["b"], ["c"], ["a"]]);
+  });
+
+  it("groups by feature, sorted alphabetically", () => {
+    const groups = groupJobs(
+      [
+        job({ sandbox_name: "a", feature_id: "zebra" }),
+        job({ sandbox_name: "b", feature_id: "apple" }),
+      ],
+      "feature",
+    );
+
+    expect(groups.map((g) => g.key)).toEqual(["apple", "zebra"]);
+  });
+
+  it("groups by agent", () => {
+    const groups = groupJobs(
+      [
+        job({ sandbox_name: "a", agent_id: "codex" }),
+        job({ sandbox_name: "b", agent_id: "claude" }),
+      ],
+      "agent",
+    );
+
+    expect(groups.map((g) => g.key)).toEqual(["claude", "codex"]);
+  });
+
+  it("groups jobs with no run under a labelled catch-all", () => {
+    const groups = groupJobs([job({ sandbox_name: "a", run_id: null })], "run");
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.label).toBe("No run");
+  });
+
+  it("never returns a group with no jobs in it", () => {
+    const groups = groupJobs([job({ status: "succeeded" })], "state");
+    expect(groups.every((g) => g.jobs.length > 0)).toBe(true);
+  });
+});
+
+describe("latestActivity", () => {
+  it("prefers the agent's own status message", () => {
+    expect(latestActivity(job({ detail: "which option?", log_tail: "irrelevant" }))).toBe(
+      "which option?",
+    );
+  });
+
+  it("falls back to the last non-empty line of the live tail", () => {
+    expect(
+      latestActivity(job({ detail: null, log_tail: "building...\nrunning tests\n\n" })),
+    ).toBe("running tests");
+  });
+
+  it("returns null when there is nothing to show yet", () => {
+    expect(latestActivity(job({ detail: null, log_tail: null }))).toBeNull();
+    expect(latestActivity(job({ detail: null, log_tail: "\n\n  \n" }))).toBeNull();
+  });
+});
+
+describe("canFollowUp", () => {
+  it("allows a follow-up once the agent is idle and not waiting on an answer", () => {
+    expect(canFollowUp("succeeded")).toBe(true);
+    expect(canFollowUp("tests_failed")).toBe(true);
+    expect(canFollowUp("stuck")).toBe(true);
+  });
+
+  it("refuses while it's running, stopped, or waiting for an answer", () => {
+    expect(canFollowUp("running")).toBe(false);
+    expect(canFollowUp("queued")).toBe(false);
+    expect(canFollowUp("stopped")).toBe(false);
+    expect(canFollowUp("awaiting_input")).toBe(false);
+  });
+});
+
+describe("questionOptions", () => {
+  it("decodes the options the agent offered", () => {
+    expect(questionOptions(job({ question_options: '["A", "B"]' }))).toEqual(["A", "B"]);
+  });
+
+  it("has none when the agent offered none", () => {
+    expect(questionOptions(job({ question_options: null }))).toEqual([]);
+  });
+
+  it("yields none rather than crashing on a malformed value", () => {
+    expect(questionOptions(job({ question_options: "not json" }))).toEqual([]);
+    expect(questionOptions(job({ question_options: '{"a": 1}' }))).toEqual([]);
+  });
+
+  it("drops anything that isn't a string", () => {
+    expect(questionOptions(job({ question_options: '["A", 2, null, "B"]' }))).toEqual(["A", "B"]);
   });
 });

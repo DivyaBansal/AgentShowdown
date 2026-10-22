@@ -40,11 +40,13 @@ export function SetupView({
   agents,
   workspaces,
   onChanged,
+  onModelsUpdated,
 }: {
   features: Feature[];
   agents: AgentInfo[];
   workspaces: WorkspaceList;
   onChanged: () => void;
+  onModelsUpdated?: (() => void) | undefined;
 }) {
   const [reloadKey, setReloadKey] = useState(0);
   const [configDoc, setConfigDoc] = useState<ConfigDoc | null>(null);
@@ -104,7 +106,8 @@ export function SetupView({
           summary={configDoc ? <span className="mono">{configDoc.path}</span> : undefined}
           status={configStatus(configDoc)}
         >
-          <ConfigEditor reloadKey={reloadKey} agents={agents} onDocChange={setConfigDoc} />
+          <ConfigEditor reloadKey={reloadKey} agents={agents} onDocChange={setConfigDoc}
+            onModelsUpdated={onModelsUpdated} />
         </Panel>
 
         <Panel step={3} title="Secrets" status={secretsStatus(secrets)}>

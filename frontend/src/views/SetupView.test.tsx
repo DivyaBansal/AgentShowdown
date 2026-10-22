@@ -31,6 +31,7 @@ const SAVED_CONFIG = {
       telemetry: false,
       telemetry_interval_seconds: 5,
       capture_usage: true,
+      agent_otel_endpoint: "http://host.docker.internal:8000",
       remove_sandbox_on_success: true,
       remove_sandbox_on_failure: true,
     },

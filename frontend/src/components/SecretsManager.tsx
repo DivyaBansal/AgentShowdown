@@ -31,7 +31,7 @@ export function SecretsManager({
       .then(show)
       .catch(() => show({ available: false, secrets: [] }));
     // onSecretsChange is a notification, not an input to the fetch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react/exhaustive-deps
   }, []);
 
   useEffect(load, [load]);

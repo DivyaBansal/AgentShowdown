@@ -21,6 +21,8 @@ import {
   type ConfigValues,
 } from "../api";
 import { withoutDraftValues } from "../lib/config";
+import { modelHint } from "../lib/modelCatalog";
+import { ModelCatalogUpdater } from "./ModelCatalogUpdater";
 import { Field } from "./ui/Field";
 import { Notice } from "./ui/Notice";
 
@@ -30,10 +32,12 @@ export function ConfigEditor({
   reloadKey,
   agents = [],
   onDocChange,
+  onModelsUpdated,
 }: {
   reloadKey: number;
   agents?: AgentInfo[];
   onDocChange?: (doc: ConfigDoc) => void;
+  onModelsUpdated?: (() => void) | undefined;
 }) {
   const [doc, setDoc] = useState<ConfigDoc | null>(null);
   const [values, setValues] = useState<ConfigValues | null>(null);
@@ -59,7 +63,7 @@ export function ConfigEditor({
       })
       .catch(() => setDoc(null));
     // onDocChange is a notification, not an input to the fetch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react/exhaustive-deps
   }, [reloadKey]);
 
   if (!doc || !values) {
@@ -76,7 +80,9 @@ export function ConfigEditor({
 
   // Per agent, because Chromium keeps showing a datalist's old options when
   // they are swapped in place; a new id makes the input read a new list.
-  const modelListId = `config-models-${values.agent.sbx_agent.replace(/[^\w-]/g, "_")}`;
+  const modelListId = `config-models-${values.agent.sbx_agent.replace(/[^\w-]/g, "_")}-${
+    agent?.models_updated_at ?? "builtin"
+  }`;
 
   function set<K extends keyof ConfigValues>(section: K, patch: Partial<ConfigValues[K]>) {
     setValues((v) => (v ? { ...v, [section]: { ...v[section], ...patch } } : v));
@@ -126,6 +132,7 @@ export function ConfigEditor({
       )}
 
       <form className="controls" onSubmit={handleSubmit}>
+        <ModelCatalogUpdater disabled={!doc.editable} onUpdated={onModelsUpdated} />
         <fieldset className="group panel__section">
           <legend>GitHub</legend>
           <div className="field-grid">
@@ -190,7 +197,8 @@ export function ConfigEditor({
                 ))}
               </datalist>
             </Field>
-            <Field id="default-model" label="Default model">
+            <Field id="default-model" label="Default model"
+              hint={modelHint(values.agent.model, agent?.known_models ?? [], agent?.model_source)}>
               <input
                 id="default-model"
                 list={modelListId}

@@ -3,14 +3,17 @@ import { fetchInit, jsonBody, type Json } from "./test/fetch";
 import {
   ApiError,
   answerJob,
+  answerJobWithOption,
   fetchAgents,
   fetchFeatures,
   fetchJobLog,
+  fetchJobTranscript,
   fetchPreflight,
   fetchRun,
   fetchRuns,
   fetchSamples,
   fetchSandboxes,
+  followupJob,
   killAllSandboxes,
   openEventStream,
   pingSandbox,
@@ -163,6 +166,45 @@ describe("fetchJobLog", () => {
     vi.stubGlobal("fetch", fetchMock);
     await fetchJobLog("box-1", 50);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/jobs/box-1/log?tail=50");
+  });
+});
+
+describe("replying to a job", () => {
+  it("answers with one of the offered options by index", async () => {
+    const fetchMock = ok({ status: "resuming", sandbox_name: "box-1" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await answerJobWithOption("box-1", 2);
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/jobs/box-1/answer");
+    expect(jsonBody(fetchInit(fetchMock))).toEqual({ option_index: 2 });
+  });
+
+  it("sends a follow-up instruction", async () => {
+    const fetchMock = ok({ status: "following_up", sandbox_name: "box-1" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(followupJob("box-1", "add a test")).resolves.toEqual({
+      status: "following_up",
+      sandbox_name: "box-1",
+    });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/jobs/box-1/followup");
+    expect(jsonBody(fetchInit(fetchMock))).toEqual({ prompt: "add a test" });
+  });
+});
+
+describe("fetchJobTranscript", () => {
+  it("returns the entries, unwrapped from the envelope", async () => {
+    const entries = [{ index: 0, kind: "result", text: "done" }];
+    vi.stubGlobal("fetch", ok({ sandbox_name: "box-1", entries }));
+    await expect(fetchJobTranscript("box-1")).resolves.toEqual(entries);
+  });
+
+  it("omits the query string when no tail length is given", async () => {
+    const fetchMock = ok({ sandbox_name: "box-1", entries: [] });
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchJobTranscript("box-1");
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/jobs/box-1/transcript");
   });
 });
 

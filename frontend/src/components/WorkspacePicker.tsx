@@ -82,7 +82,7 @@ export function WorkspacePicker({ onChanged }: { onChanged: () => void }) {
       cancelled = true;
       clearInterval(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react/exhaustive-deps
   }, [cloneId]);
 
   function fail(cause: unknown, fallback: string) {

@@ -26,6 +26,8 @@ export interface AgentInfo {
   supports_skip_permissions: boolean;
   verified: boolean;
   known_models: string[];
+  model_source?: string;
+  models_updated_at?: string | null;
   default_model: string | null;
   reports_token_usage: boolean;
 }
@@ -89,7 +91,28 @@ export interface Job {
    *  via the `job_log` SSE event rather than a `GET /jobs` refetch -- see
    *  useJobStream. */
   log_tail: string | null;
+  /** Seconds spent in each phase of the latest attempt; null when that
+   *  phase hasn't run (or the row predates per-step timing). */
+  launch_s: number | null;
+  agent_s: number | null;
+  verify_s: number | null;
+  push_s: number | null;
+  /** Why the job failed; null unless its status is a failure. */
+  failure_category: FailureCategory | null;
+  /** JSON-encoded list of the answer choices an awaiting_input agent
+   *  offered with its question; null when it offered none. Decode with
+   *  `questionOptions` in lib/jobs, which tolerates a malformed value. */
+  question_options: string | null;
 }
+
+export type FailureCategory =
+  | "infra"
+  | "agent_stuck"
+  | "timeout"
+  | "tests"
+  | "lint"
+  | "internal"
+  | "cancelled";
 
 export interface Run {
   run_id: string;
@@ -234,6 +257,8 @@ export interface OllamaModels {
   /** False when the host has no Ollama or it isn't answering. */
   available: boolean;
   models: string[];
+  model_source?: string;
+  models_updated_at?: string | null;
 }
 
 /** Models pulled into the host's Ollama, offered as model suggestions. */
@@ -274,6 +299,74 @@ export async function fetchJobLog(sandboxName: string, tail?: number): Promise<s
   return (await request<{ sandbox_name: string; tail: string }>(path)).tail;
 }
 
+/** One best-effort parsed event from an agent's JSON output. `kind` is
+ *  whatever the agent's own CLI called it (e.g. claude's "assistant" /
+ *  "result"), passed through verbatim; null when the event had none. */
+export interface TranscriptEntry {
+  index: number;
+  kind: string | null;
+  text: string;
+}
+
+/** A structured view of a job's output, parsed server-side from the same
+ *  tail `fetchJobLog` reads. Empty for an agent whose output isn't JSON
+ *  (cursor, opencode, copilot, a custom `command:`) -- callers fall back
+ *  to the raw log for those. */
+export async function fetchJobTranscript(
+  sandboxName: string,
+  tail?: number,
+): Promise<TranscriptEntry[]> {
+  const query = tail !== undefined ? `?tail=${tail}` : "";
+  const path = `/jobs/${encodeURIComponent(sandboxName)}/transcript${query}`;
+
+  return (await request<{ sandbox_name: string; entries: TranscriptEntry[] }>(path)).entries;
+}
+
+/** One step of an agent's run, from the OTel events its CLI exported
+ *  (claude and codex only). Built server-side from the raw events. */
+export interface TimelineEntry {
+  /** ISO-8601; the CLI's own time when it sent one. */
+  at: string | null;
+  kind: "tool" | "model" | "prompt" | "error" | "other";
+  /** The tool, model or event, e.g. "Bash" or "claude-haiku-4-5". */
+  title: string;
+  /** What it acted on (a command, a file path) or produced (tokens). */
+  detail: string | null;
+  duration_ms: number | null;
+  ok: boolean | null;
+  /** The raw event name, e.g. "claude_code.tool_result". */
+  name: string;
+  /** Position in the timeline; stable, since events are only appended. */
+  seq: number;
+}
+
+export interface ToolRollup {
+  calls: number;
+  failures: number;
+  duration_ms: number;
+}
+
+export interface AgentEventsSummary {
+  event_counts: Record<string, number>;
+  /** Total model cost; null when no event reported one (codex). */
+  cost_usd: number | null;
+  tools: Record<string, ToolRollup>;
+}
+
+export interface AgentEvents {
+  timeline: TimelineEntry[];
+  summary: AgentEventsSummary;
+}
+
+/** A job's agent telemetry as a timeline, oldest first. Empty for agents
+ *  that export none. */
+export async function fetchAgentEvents(sandboxName: string): Promise<AgentEvents> {
+  const path = `/jobs/${encodeURIComponent(sandboxName)}/agent-events`;
+  const body = await request<AgentEvents & { events: unknown[] }>(path);
+
+  return { timeline: body.timeline, summary: body.summary };
+}
+
 export async function fetchSandboxes(): Promise<SandboxSummary[]> {
   return (await request<{ sandboxes: SandboxSummary[] }>("/sandboxes")).sandboxes;
 }
@@ -285,6 +378,8 @@ export async function startRun(body: StartRunRequest): Promise<{ run_ids: string
   });
 }
 
+/** Answers an agent that stopped to ask. Accepted at once (202); the agent
+ *  resumes in the background and its progress arrives over the SSE stream. */
 export async function answerJob(
   sandboxName: string,
   answer: string,
@@ -292,6 +387,31 @@ export async function answerJob(
   return request<{ status: string }>(
     `/jobs/${encodeURIComponent(sandboxName)}/answer`,
     { method: "POST", body: JSON.stringify({ answer }) },
+  );
+}
+
+/** Answers by picking one of the options the agent offered. The server
+ *  resolves the index to that option's text, so the agent sees the same
+ *  prompt it would for a typed answer. */
+export async function answerJobWithOption(
+  sandboxName: string,
+  optionIndex: number,
+): Promise<{ status: string }> {
+  return request<{ status: string }>(
+    `/jobs/${encodeURIComponent(sandboxName)}/answer`,
+    { method: "POST", body: JSON.stringify({ option_index: optionIndex }) },
+  );
+}
+
+/** Sends a new instruction to a job whose agent isn't waiting on anything
+ *  but whose sandbox is still around. Also accepted at once (202). */
+export async function followupJob(
+  sandboxName: string,
+  prompt: string,
+): Promise<{ status: string }> {
+  return request<{ status: string }>(
+    `/jobs/${encodeURIComponent(sandboxName)}/followup`,
+    { method: "POST", body: JSON.stringify({ prompt }) },
   );
 }
 
@@ -421,6 +541,8 @@ export interface RunConfig {
   telemetry: boolean;
   telemetry_interval_seconds: number;
   capture_usage: boolean;
+  // Where sandboxed claude/codex send OTel events; null turns export off.
+  agent_otel_endpoint: string | null;
   remove_sandbox_on_success: boolean;
   remove_sandbox_on_failure: boolean;
 }
@@ -584,4 +706,93 @@ export function importIssues(
     method: "POST",
     body: JSON.stringify({ issues, agents }),
   });
+}
+
+// --- Quick questions -------------------------------------------------------
+
+export type AskProviderId = "claude" | "codex" | "openrouter" | "ollama";
+
+export interface AskProviderInfo {
+  provider: AskProviderId;
+  label: string;
+  /** Whether this host can use it right now (CLI installed, key set, …). */
+  configured: boolean;
+  hint: string;
+  suggested_models: string[];
+  model_source?: string;
+  models_updated_at?: string | null;
+}
+
+export interface ModelCatalog {
+  models: string[];
+  source: string;
+  updated_at: string | null;
+}
+
+export interface ModelRefresh {
+  refresh_id: string;
+  state: "running" | "finished";
+  started_at: string;
+  finished_at: string | null;
+  error: string | null;
+  results: Record<string, {
+    status: "updated" | "failed" | "timed_out";
+    count?: number;
+    source?: string;
+    detail: string;
+  }>;
+}
+
+export interface ModelCatalogState {
+  catalogs: Record<string, ModelCatalog>;
+  refresh: ModelRefresh | null;
+}
+
+export function fetchModelCatalogs(): Promise<ModelCatalogState> {
+  return request("/models");
+}
+
+export function updateModels(): Promise<ModelRefresh> {
+  return request("/models/refresh", { method: "POST" });
+}
+
+export function fetchModelRefresh(id: string): Promise<ModelRefresh> {
+  return request(`/models/refresh/${encodeURIComponent(id)}`);
+}
+
+export interface AskContender {
+  provider: AskProviderId;
+  model: string;
+}
+
+export interface AskAnswer extends AskContender {
+  status: "pending" | "done" | "error";
+  text: string;
+  error: string | null;
+  latency_ms: number | null;
+  /** null means "not reported", never zero. */
+  input_tokens: number | null;
+  output_tokens: number | null;
+}
+
+export interface AskResult {
+  ask_id: string;
+  question: string;
+  created_at: number;
+  answers: AskAnswer[];
+}
+
+export async function fetchAskProviders(): Promise<AskProviderInfo[]> {
+  return (await request<{ providers: AskProviderInfo[] }>("/ask/providers")).providers;
+}
+
+export function startAsk(question: string, contenders: AskContender[]): Promise<{ ask_id: string }> {
+  return request<{ ask_id: string }>("/asks", {
+    method: "POST",
+    body: JSON.stringify({ question, contenders }),
+  });
+}
+
+export function fetchAsk(askId: string): Promise<AskResult> {
+  return request<AskResult>(`/asks/${encodeURIComponent(askId)}`);
 }

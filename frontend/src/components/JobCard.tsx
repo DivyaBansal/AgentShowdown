@@ -10,9 +10,11 @@ import {
   elapsedSeconds,
   formatDiff,
   formatDuration,
+  latestActivity,
   statusTone,
   totalTokens,
 } from "../lib/jobs";
+import { ReplyForm } from "./ReplyForm";
 import { Notice } from "./ui/Notice";
 import { StatusChip } from "./ui/StatusChip";
 
@@ -43,6 +45,7 @@ export function JobCard({
   onSelect?: (job: Job) => void;
 }) {
   const tokens = totalTokens(job);
+  const activity = latestActivity(job);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const showStop = canStop(job.status);
@@ -85,6 +88,22 @@ export function JobCard({
         </div>
         <StatusChip tone={statusTone(job.status)}>{job.status}</StatusChip>
       </div>
+      {activity && (
+        <p
+          className={
+            job.status === "awaiting_input"
+              ? "job-card__activity job-card__activity--question"
+              : "job-card__activity"
+          }
+          title={activity}
+        >
+          {activity}
+        </p>
+      )}
+      {/* A blocked agent is the one thing on the board that needs a person,
+          so the reply goes right on the card. The question itself is the
+          activity line above, so it isn't repeated here. */}
+      {job.status === "awaiting_input" && <ReplyForm job={job} showQuestion={false} />}
       <dl>
         <Metric label="Model" value={job.model} />
         <Metric label="Duration" value={formatDuration(elapsedSeconds(job, now))} />

@@ -30,6 +30,7 @@ const DOC = {
       telemetry: false,
       telemetry_interval_seconds: 5,
       capture_usage: true,
+      agent_otel_endpoint: "http://host.docker.internal:8000",
       remove_sandbox_on_success: true,
       remove_sandbox_on_failure: true,
     },
@@ -60,6 +61,30 @@ function stub(doc: Json = DOC, putOk = true) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("ConfigEditor", () => {
+  it("places one Update models button before GitHub without changing unsaved values", async () => {
+    stub();
+    const { rerender } = render(<ConfigEditor reloadKey={0} />);
+    const button = await screen.findByRole("button", { name: "Update models" });
+    const github = screen.getByText("GitHub", { selector: "legend" });
+    expect(button.compareDocumentPosition(github) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Update models" })).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText(/default model/i), { target: { value: "manual-model" } });
+    rerender(<ConfigEditor reloadKey={0} agents={[{
+      agent_id: "claude", accepts_model: true, requires_command: false,
+      supports_skip_permissions: true, verified: true, reports_token_usage: true,
+      known_models: ["new-model"], default_model: "claude-haiku-4-5",
+      model_source: "cli", models_updated_at: "2026-10-18T12:00:00Z",
+    }]} />);
+    expect(screen.getByLabelText(/default model/i)).toHaveValue("manual-model");
+    expect(screen.getByText(/This model is not listed/)).toBeInTheDocument();
+    expect(document.querySelector('datalist option[value="new-model"]')).toBeInTheDocument();
+  });
+
+  it("disables model updates when the demo configuration is read-only", async () => {
+    stub({ ...DOC, editable: false });
+    render(<ConfigEditor reloadKey={0} />);
+    expect(await screen.findByRole("button", { name: "Update models" })).toBeDisabled();
+  });
   it("prefills from the workspace's saved config", async () => {
     stub();
     render(<ConfigEditor reloadKey={0} />);

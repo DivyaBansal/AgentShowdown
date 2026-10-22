@@ -163,6 +163,30 @@ table.standings {
   margin-top: 2px;
 }
 
+/* The live one-liner: the agent's own status message, or its most recent
+   output line while still working. Truncated -- the full text is in the
+   title attribute and, for the running output, in the live log view. */
+.job-card__activity {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* On a blocked card the activity line is the question someone has to
+   answer, so it's shown in full rather than cut off. */
+.job-card__activity--question,
+.reply__question {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .job-card dl {
   display: grid;
   grid-template-columns: max-content 1fr;

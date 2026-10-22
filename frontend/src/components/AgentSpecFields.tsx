@@ -17,6 +17,7 @@
 import { useEffect, useState } from "react";
 import { fetchOllamaModels, type AgentInfo, type AgentSpec, type OllamaModels } from "../api";
 import { supportsOllamaPreset, usesOllama, withOllama, withoutOllama } from "../lib/ollama";
+import { modelHint as catalogHint } from "../lib/modelCatalog";
 import type { FeaturesAction } from "./featuresReducer";
 import { Field } from "./ui/Field";
 
@@ -47,16 +48,16 @@ export function AgentSpecFields({
   // The id names the suggestion source, not just the row: Chromium keeps
   // showing a datalist's old options when they are swapped in place, so a
   // new agent (or the Ollama preset) has to point the input at a new list.
-  const listId = `models-${index}-${agentIndex}-${agent.agent_id.replace(/[^\w-]/g, "_")}${
-    ollama ? "-ollama" : ""
-  }`;
-
   const [ollamaModels, setOllamaModels] = useState<OllamaModels | null>(null);
 
-  // Asked only once the preset is on: most agents never use it, and each
-  // ask shells out to `ollama list` on the host.
+  const listId = `models-${index}-${agentIndex}-${agent.agent_id.replace(/[^\w-]/g, "_")}-${
+    ollama ? `ollama-${ollamaModels?.models_updated_at ?? "builtin"}`
+      : (known?.models_updated_at ?? "builtin")
+  }`;
+
+  // Reads saved suggestions when the preset or the shared catalogs change.
   useEffect(() => {
-    if (!ollama || ollamaModels !== null) return;
+    if (!ollama) return;
     let cancelled = false;
     fetchOllamaModels()
       .catch((): OllamaModels => ({ available: false, models: [] }))
@@ -67,7 +68,7 @@ export function AgentSpecFields({
     return () => {
       cancelled = true;
     };
-  }, [ollama, ollamaModels]);
+  }, [ollama, agents]);
 
   const suggestions = ollama ? (ollamaModels?.models ?? []) : (known?.known_models ?? []);
   let modelHint: string | undefined;
@@ -75,10 +76,10 @@ export function AgentSpecFields({
   if (ollama) {
     modelHint =
       ollamaModels === null || ollamaModels.available
-        ? "Models pulled into this machine's Ollama."
+        ? catalogHint(agent.model ?? "", suggestions, ollamaModels?.model_source)
         : "Couldn't list Ollama's models -- type the name as `ollama list` shows it.";
-  } else if ((known?.known_models.length ?? 0) > 0) {
-    modelHint = "Any name is accepted once a base-URL variable points the agent elsewhere.";
+  } else {
+    modelHint = catalogHint(agent.model ?? "", suggestions, known?.model_source);
   }
 
   const commandField = (
@@ -120,8 +121,8 @@ export function AgentSpecFields({
 
   function toggleOllama(on: boolean) {
     // A model that only one side serves can't survive the switch: a claude
-    // name means nothing to Ollama, and an Ollama tag fails the known-model
-    // check once the endpoint is gone. Either way, start the field over.
+    // name means nothing to Ollama, and an Ollama tag may be unavailable
+    // once the endpoint is gone. Either way, start the field over.
     const isKnown = agent.model !== null && (known?.known_models ?? []).includes(agent.model);
     const keepModel = agent.model !== null && (on ? !isKnown : isKnown);
 
@@ -363,7 +364,7 @@ export function AgentSpecFields({
             </div>
             <p className="hint">
               Setting a base-URL variable (for example ANTHROPIC_BASE_URL) points the
-              agent at a custom endpoint and waives the known-model check.
+              agent at a custom endpoint with its own model names.
             </p>
           </fieldset>
         </div>
