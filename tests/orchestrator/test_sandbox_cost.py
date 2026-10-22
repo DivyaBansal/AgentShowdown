@@ -99,24 +99,38 @@ def _execs(calls: list[list[str]]) -> list[list[str]]:
     return [c for c in calls if len(c) > 1 and c[0] == "sbx" and c[1] == "exec"]
 
 
-def test_default_job_makes_exactly_three_sandbox_execs(
+def test_default_job_makes_exactly_four_sandbox_execs(
     tmp_path: Path, sbx_calls: list[list[str]]
 ) -> None:
-    """Launch the agent, read its status once, extract once at teardown.
+    """Launch the agent, read its status once, confirm it exited, extract
+    once at teardown.
 
-    Anything beyond these three is new cost inside the container.
+    The exit check is the price of agent telemetry: the CLI flushes its last
+    OTel batch on exit, after reporting its status, so teardown waits for
+    the exit. It is one exec when the agent has already exited by then.
+    Anything beyond these four is new cost inside the container.
     """
     _run_one_job(_config(tmp_path))
 
     execs = _execs(sbx_calls)
-    assert len(execs) == 3, [" ".join(c) for c in execs]
+    assert len(execs) == 4, [" ".join(c) for c in execs]
 
     joined = [" ".join(c) for c in execs]
     # The launch command also mentions the status file (its fallback wrapper
     # writes one if the agent dies), so match the actual read, not the path.
     assert sum("disown" in c for c in joined) == 1  # launching the agent
     assert sum("cat .agent_status.json" in c for c in joined) == 1  # one status read
+    assert sum(c.endswith("test -f /tmp/sbx-agent-exit") for c in joined) == 1  # exit check
     assert sum("rev-parse" in c for c in joined) == 1  # one bundled teardown read
+
+
+def test_a_job_without_agent_telemetry_skips_the_exit_check(
+    tmp_path: Path, sbx_calls: list[list[str]]
+) -> None:
+    """With export off there is nothing to flush, so no exit wait either."""
+    _run_one_job(_config(tmp_path, agent_otel_endpoint=None))
+
+    assert len(_execs(sbx_calls)) == 3
 
 
 def test_verification_does_not_run_in_the_sandbox_by_default(
@@ -134,7 +148,7 @@ def test_verify_on_sandbox_costs_one_extra_exec(tmp_path: Path, sbx_calls: list[
     _run_one_job(_config(tmp_path, verify_on="sandbox", test_command="pytest -q"))
 
     execs = _execs(sbx_calls)
-    assert len(execs) == 4
+    assert len(execs) == 5
     assert any("pytest" in " ".join(c) for c in execs)
 
 

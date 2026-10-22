@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 import time
 
-from backend.orchestrator.config import Config, Feature
+from backend.orchestrator.config import Config, Feature, validate_sandbox_limits
 from backend.orchestrator.job import expand_jobs, resume_job, run_all
 from backend.orchestrator.process import CommandError
 from backend.orchestrator.state import StateStore
@@ -63,6 +64,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override run.max_concurrency from config for this invocation.",
     )
+    run_p.add_argument("--cpus", type=int, default=None, help="CPUs per sandbox (sbx --cpus).")
+    run_p.add_argument(
+        "--memory", default=None, help='Memory per sandbox, e.g. "4g" (sbx --memory).'
+    )
 
     status_p = sub.add_parser("status", help="Show all known jobs.")
     status_p.add_argument(
@@ -88,6 +93,11 @@ def main() -> None:
         features = Feature.load_all(args.features)
 
         if args.command == "run":
+            try:
+                memory = validate_sandbox_limits(args.cpus, args.memory)
+            except ValueError as e:
+                parser.error(str(e))
+            config = dataclasses.replace(config, cpus=args.cpus, memory=memory)
             feature_ids = None if args.all else args.feature_id
             jobs = expand_jobs(config, features, feature_ids)
             max_workers = args.max_concurrency or config.max_concurrency

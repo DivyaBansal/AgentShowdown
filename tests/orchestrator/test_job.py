@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import threading
 import time
 from pathlib import Path
 
 import pytest
+import structlog.testing
 from backend.orchestrator import job as job_module
 from backend.orchestrator.config import AgentProfile, AgentSpec, Config, Feature
 from backend.orchestrator.events import bus as event_bus
 from backend.orchestrator.process import CommandError
+from backend.orchestrator.prompt import MAX_QUESTION_OPTIONS
 from backend.orchestrator.state import StateStore
 
 
@@ -155,20 +158,18 @@ def test_expand_jobs_accepts_copilot_agent_id(tmp_path: Path) -> None:
     assert jobs == [(features["f1"], AgentSpec(agent_id="copilot"))]
 
 
-def test_expand_jobs_unknown_model_raises(tmp_path: Path) -> None:
+def test_expand_jobs_allows_manual_model(tmp_path: Path) -> None:
     config = _config(tmp_path)
     spec = AgentSpec(agent_id="claude", model="not-a-real-model")
     features = {"f1": _feature(agents=[spec])}
-    with pytest.raises(CommandError, match="Unknown model 'not-a-real-model'"):
-        job_module.expand_jobs(config, features, None)
+    assert job_module.expand_jobs(config, features, None) == [(features["f1"], spec)]
 
 
-def test_expand_jobs_unknown_model_error_names_the_feature(tmp_path: Path) -> None:
+def test_expand_jobs_unlisted_model_warns(tmp_path: Path) -> None:
     config = _config(tmp_path)
     spec = AgentSpec(agent_id="claude", model="not-a-real-model")
     features = {"f1": _feature(agents=[spec])}
-    with pytest.raises(CommandError, match="Feature 'f1'"):
-        job_module.expand_jobs(config, features, None)
+    assert job_module.expand_jobs(config, features, None) == [(features["f1"], spec)]
 
 
 def test_expand_jobs_unvalidated_agent_model_is_allowed(tmp_path: Path) -> None:
@@ -199,14 +200,13 @@ def test_expand_jobs_custom_endpoint_env_skips_model_validation(tmp_path: Path) 
     assert jobs == [(features["f1"], spec)]
 
 
-def test_expand_jobs_env_without_base_url_still_validates_model(tmp_path: Path) -> None:
+def test_expand_jobs_env_without_base_url_allows_manual_model(tmp_path: Path) -> None:
     config = _config(tmp_path)
     spec = AgentSpec(
         agent_id="claude", model="not-a-real-model", env={"ANTHROPIC_AUTH_TOKEN": "ollama"}
     )
     features = {"f1": _feature(agents=[spec])}
-    with pytest.raises(CommandError, match="Unknown model 'not-a-real-model'"):
-        job_module.expand_jobs(config, features, None)
+    assert job_module.expand_jobs(config, features, None) == [(features["f1"], spec)]
 
 
 def test_expand_jobs_custom_endpoint_from_agent_profile_skips_validation(tmp_path: Path) -> None:
@@ -807,6 +807,23 @@ def test_run_job_merges_and_passes_resolved_env_to_sbx_create(
     }
 
 
+def test_run_job_passes_and_records_sandbox_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path, cpus=2, memory="4g")
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
+    create_calls: list[dict] = []
+    monkeypatch.setattr(job_module, "sbx_create_detached", lambda **kw: create_calls.append(kw))
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: None)
+    monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "timed_out")
+
+    job_module.run_job(config, _feature(), AgentSpec(agent_id="claude"))
+
+    assert (create_calls[0]["cpus"], create_calls[0]["memory"]) == (2, "4g")
+    row = StateStore(config.state_db_path).all_jobs()[0]
+    assert (row["cpus"], row["memory_limit"]) == (2, "4g")
+
+
 def test_run_job_resolves_provider_and_skip_permissions_from_agent_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -942,6 +959,184 @@ def test_resume_job_awaiting_input_again_does_not_finalize(
     monkeypatch.setattr(job_module, "_finalize_success", _refuse)
 
     job_module.resume_job(config, {"f1": feature}, sandbox_name, "use option B")  # must not raise
+
+
+def test_resume_clears_the_options_the_answered_question_offered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stale options would otherwise reappear as buttons on the next question."""
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    feature = _feature()
+    sandbox_name = job_module.sandbox_name_for(feature.id, AgentSpec(agent_id="claude"))
+    store.upsert(
+        sandbox_name,
+        feature_id=feature.id,
+        agent_id="claude",
+        branch="agent/f1/claude",
+        status="awaiting_input",
+        question_options='["A", "B"]',
+    )
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: True)
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: None)
+    monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "awaiting_input")
+
+    job_module.resume_job(config, {"f1": feature}, sandbox_name, "A")
+
+    assert _job(store, sandbox_name)["question_options"] is None
+
+
+# --- question options --------------------------------------------------------
+
+
+def test_question_options_from_reads_offered_options() -> None:
+    status = {"state": "awaiting_input", "message": "which?", "options": ["Keep it", "Drop it"]}
+    assert job_module.question_options_from(status) == '["Keep it", "Drop it"]'
+
+
+def test_question_options_from_ignores_options_outside_awaiting_input() -> None:
+    assert job_module.question_options_from({"state": "done", "options": ["A"]}) is None
+
+
+def test_question_options_from_rejects_a_non_list() -> None:
+    assert job_module.question_options_from({"state": "awaiting_input", "options": "A"}) is None
+
+
+def test_question_options_from_drops_non_strings_and_blanks() -> None:
+    status = {"state": "awaiting_input", "options": ["A", 3, "", "  ", None, "B"]}
+    assert job_module.question_options_from(status) == '["A", "B"]'
+
+
+def test_question_options_from_caps_count_and_length() -> None:
+    """The status file is written by the agent -- external input, bounded."""
+    status = {"state": "awaiting_input", "options": ["x" * 500] + [str(i) for i in range(20)]}
+
+    options = json.loads(job_module.question_options_from(status) or "[]")
+
+    assert len(options) == MAX_QUESTION_OPTIONS
+    assert len(options[0]) == 200
+
+
+def test_option_text_for_resolves_an_index() -> None:
+    job = {"sandbox_name": "box-1", "question_options": '["Keep it", "Drop it"]'}
+    assert job_module.option_text_for(job, 1) == "Drop it"
+
+
+def test_option_text_for_out_of_range_raises() -> None:
+    job = {"sandbox_name": "box-1", "question_options": '["Keep it"]'}
+    with pytest.raises(CommandError, match="no option 3"):
+        job_module.option_text_for(job, 3)
+
+
+def test_option_text_for_without_options_raises() -> None:
+    with pytest.raises(CommandError, match="offered 0"):
+        job_module.option_text_for({"sandbox_name": "box-1", "question_options": None}, 0)
+
+
+def test_poll_until_signal_records_the_options_with_the_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    store.upsert("box-1", feature_id="f1", agent_id="claude", branch="b", status="running")
+    monkeypatch.setattr(job_module, "sbx_status", lambda name: "running")
+    monkeypatch.setattr(
+        job_module,
+        "sbx_read_status_and_tail",
+        lambda *a: ({"state": "awaiting_input", "message": "which?", "options": ["A", "B"]}, ""),
+    )
+
+    job_module.poll_until_signal(config, store, "box-1", time.monotonic() + 10)
+
+    job = _job(store, "box-1")
+    assert job["detail"] == "which?"
+    assert json.loads(job["question_options"]) == ["A", "B"]
+
+
+# --- plan_followup -------------------------------------------------------------
+
+
+def _seed(store: StateStore, sandbox_name: str, status: str) -> None:
+    store.upsert(
+        sandbox_name, feature_id="f1", agent_id="claude", branch="agent/f1/claude", status=status
+    )
+
+
+def test_plan_followup_unknown_job_raises(tmp_path: Path) -> None:
+    with pytest.raises(CommandError, match="No known job"):
+        job_module.plan_followup(_config(tmp_path), {}, "box-1")
+
+
+@pytest.mark.parametrize("status", ["running", "queued"])
+def test_plan_followup_refuses_a_live_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """A second launch into a running sandbox would race the first."""
+    config = _config(tmp_path)
+    _seed(StateStore(config.state_db_path), "box-1", status)
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: True)
+
+    with pytest.raises(CommandError, match="still"):
+        job_module.plan_followup(config, {"f1": _feature()}, "box-1")
+
+
+def test_plan_followup_refuses_a_stopped_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    _seed(StateStore(config.state_db_path), "box-1", "stopped")
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: True)
+
+    with pytest.raises(CommandError, match="respawn it first"):
+        job_module.plan_followup(config, {"f1": _feature()}, "box-1")
+
+
+def test_plan_followup_refuses_when_the_sandbox_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    _seed(StateStore(config.state_db_path), "box-1", "succeeded")
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
+
+    with pytest.raises(CommandError, match="no longer exists"):
+        job_module.plan_followup(config, {"f1": _feature()}, "box-1")
+
+
+def test_plan_followup_accepts_a_finished_job_with_its_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    feature = _feature()
+    sandbox_name = job_module.sandbox_name_for(feature.id, AgentSpec(agent_id="claude"))
+    _seed(StateStore(config.state_db_path), sandbox_name, "tests_failed")
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: True)
+
+    job, feature_out, spec = job_module.plan_followup(config, {"f1": feature}, sandbox_name)
+
+    assert job["sandbox_name"] == sandbox_name
+    assert feature_out is feature
+    assert spec.agent_id == "claude"
+
+
+def test_relaunch_and_await_resumes_the_session_with_the_given_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+    _seed(store, sandbox_name, "tests_failed")
+    launches: list[dict] = []
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: launches.append(kw))
+    monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: "awaiting_input")
+
+    job_module.relaunch_and_await(
+        config, _job(store, sandbox_name), feature, spec, "fix the test", event="job_following_up"
+    )
+
+    assert launches[0]["prompt"] == "fix the test"
+    assert launches[0]["resume"] is True
 
 
 # --- plan_respawn / respawn_job ----------------------------------------------
@@ -1543,3 +1738,193 @@ def test_respawn_in_place_clears_previous_attempts_metrics_while_running(
     job_module.respawn_job(config, feature, spec, sandbox_name, in_place=True)
 
     _assert_previous_attempt_cleared(seen)
+
+
+# --- per-step timing ---------------------------------------------------------
+
+_STEP_COLUMNS = ("launch_s", "agent_s", "verify_s", "push_s")
+
+
+def _stub_launch_and_poll(monkeypatch: pytest.MonkeyPatch, final_status: str) -> None:
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
+    monkeypatch.setattr(job_module, "sbx_create_detached", lambda **kw: None)
+    monkeypatch.setattr(job_module, "sbx_launch_agent", lambda **kw: None)
+    monkeypatch.setattr(job_module, "poll_until_signal", lambda *a: final_status)
+    monkeypatch.setattr(job_module, "sbx_rm", lambda name: None)
+
+
+def test_run_job_success_records_every_step_and_no_failure_category(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path, test_command="pytest")
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+    _stub_launch_and_poll(monkeypatch, "done")
+    calls: list[str] = []
+    _stub_teardown_read(monkeypatch, calls)
+    _stub_finalize_host_calls(monkeypatch, calls)
+
+    job_module.run_job(config, feature, spec)
+
+    job = _job(StateStore(config.state_db_path), sandbox_name)
+    assert job["status"] == "succeeded"
+    for column in _STEP_COLUMNS:
+        assert isinstance(job[column], float), column
+        assert job[column] >= 0, column
+    assert job["failure_category"] is None
+
+
+def test_finalize_success_test_failure_records_verify_but_not_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path, test_command="pytest")
+    store = StateStore(config.state_db_path)
+    _seed_done(store)
+    calls: list[str] = []
+    _stub_teardown_read(monkeypatch, calls)
+    _stub_finalize_host_calls(monkeypatch, calls, verify_ok=False)
+
+    _finalize(config, store, _feature())
+
+    job = _job(store, "box-1")
+    assert job["failure_category"] == "tests"
+    assert job["verify_s"] is not None
+    assert job["push_s"] is None
+
+
+def test_finalize_success_lint_failure_is_categorised_as_lint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path, lint_command="ruff check")
+    store = StateStore(config.state_db_path)
+    _seed_done(store)
+    calls: list[str] = []
+    _stub_teardown_read(monkeypatch, calls)
+    _stub_finalize_host_calls(monkeypatch, calls, verify_ok=False)
+
+    _finalize(config, store, _feature())
+
+    job = _job(store, "box-1")
+    assert job["status"] == "lint_failed"
+    assert job["failure_category"] == "lint"
+
+
+@pytest.mark.parametrize(
+    ("final_status", "category"),
+    [("timed_out", "timeout"), ("crashed", "infra"), ("stuck", "agent_stuck")],
+)
+def test_run_job_agent_failure_records_category_and_agent_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, final_status: str, category: str
+) -> None:
+    config = _config(tmp_path)
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+    store = StateStore(config.state_db_path)
+    _stub_launch_and_poll(monkeypatch, final_status)
+
+    def poll(_config, poll_store, name, _deadline) -> str:
+        # The real poll loop is what writes the terminal status.
+        poll_store.upsert(name, status=final_status)
+        return final_status
+
+    monkeypatch.setattr(job_module, "poll_until_signal", poll)
+
+    job_module.run_job(config, feature, spec)
+
+    job = _job(store, sandbox_name)
+    assert job["failure_category"] == category
+    assert job["launch_s"] is not None
+    assert job["agent_s"] is not None
+    assert job["verify_s"] is None
+
+
+def test_run_job_safe_unexpected_exception_is_categorised_internal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+
+    def boom(*_a, **_k) -> None:
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: False)
+    monkeypatch.setattr(job_module, "sbx_create_detached", boom)
+
+    job_module.run_job_safe(config, feature, spec)
+
+    job = _job(StateStore(config.state_db_path), sandbox_name)
+    assert job["status"] == "error"
+    assert job["failure_category"] == "internal"
+    # The failed launch is still timed.
+    assert job["launch_s"] is not None
+
+
+def test_new_attempt_clears_the_previous_attempts_timings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relaunch must not show the last attempt's verify/push time while it runs."""
+    config = _config(tmp_path)
+    store = StateStore(config.state_db_path)
+    feature = _feature()
+    spec = AgentSpec(agent_id="claude")
+    sandbox_name = job_module.sandbox_name_for(feature.id, spec)
+    store.upsert(
+        sandbox_name,
+        feature_id=feature.id,
+        agent_id="claude",
+        branch="b",
+        status="tests_failed",
+        verify_s=9.0,
+        push_s=4.0,
+    )
+    _stub_launch_and_poll(monkeypatch, "awaiting_input")
+    monkeypatch.setattr(job_module, "sbx_exists", lambda name: True)
+    seen: dict[str, object] = {}
+
+    def poll(_config, poll_store, name, _deadline) -> str:
+        seen.update(poll_store.get(name) or {})
+        return "awaiting_input"
+
+    monkeypatch.setattr(job_module, "poll_until_signal", poll)
+
+    job_module.run_job(config, feature, spec)
+
+    assert seen["verify_s"] is None
+    assert seen["push_s"] is None
+    assert seen["failure_category"] is None
+    assert seen["launch_s"] is not None
+
+
+def test_timed_step_logs_the_step_with_its_duration(tmp_path: Path) -> None:
+    store = StateStore(str(tmp_path / "state.sqlite3"))
+    store.upsert("box-1", feature_id="f1", agent_id="claude", status="running")
+
+    with structlog.testing.capture_logs() as logs, job_module._timed_step(store, "box-1", "push"):
+        pass
+
+    events = [e for e in logs if e["event"] == "job_step_finished"]
+    assert len(events) == 1
+    assert events[0]["step"] == "push"
+    assert events[0]["outcome"] == "ok"
+    assert isinstance(events[0]["duration_ms"], int)
+    assert _job(store, "box-1")["push_s"] is not None
+
+
+def test_timed_step_records_the_duration_when_the_step_raises(tmp_path: Path) -> None:
+    store = StateStore(str(tmp_path / "state.sqlite3"))
+    store.upsert("box-1", feature_id="f1", agent_id="claude", status="running")
+
+    with (
+        structlog.testing.capture_logs() as logs,
+        pytest.raises(RuntimeError),
+        job_module._timed_step(store, "box-1", "launch"),
+    ):
+        raise RuntimeError("sbx create failed")
+
+    events = [e for e in logs if e["event"] == "job_step_finished"]
+    assert events[0]["outcome"] == "error"
+    assert _job(store, "box-1")["launch_s"] is not None

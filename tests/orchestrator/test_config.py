@@ -381,9 +381,9 @@ def test_validate_model_accepts_known_model() -> None:
     validate_model("claude", "claude-haiku-4-5")  # should not raise
 
 
-def test_validate_model_rejects_unknown_model_for_known_agent() -> None:
-    with pytest.raises(CommandError, match="Unknown model 'nope'"):
-        validate_model("claude", "nope")
+def test_validate_model_allows_manual_model_for_known_agent(capsys) -> None:
+    validate_model("claude", "nope")
+    assert "model_not_in_catalog" in capsys.readouterr().out
 
 
 def test_validate_model_skips_agent_with_no_known_models_entry() -> None:

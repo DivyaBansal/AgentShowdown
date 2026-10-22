@@ -1,4 +1,4 @@
-"""sbx wrapper -- thin, explicit subprocess calls. No hidden magic."""
+"""sbx wrapper functions for sandbox: create, launch, poll, teardown."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import shlex
 from typing import TYPE_CHECKING
 
 from backend.logging import log
+from backend.orchestrator.agent_otel import exports_otel, logs_endpoint, with_otel
 from backend.orchestrator.process import CommandError, CommandTimeout, RunOptions, run
 
 if TYPE_CHECKING:
@@ -17,6 +18,10 @@ if TYPE_CHECKING:
 # Path *inside* the sandbox container, not on the host -- S108 is about
 # host-side temp files, which this is not.
 AGENT_LOG_PATH = "/tmp/sbx-agent-run.log"  # noqa: S108
+# Written by the launch wrapper once the agent process has exited, holding
+# its exit code. Removed at every launch, so its presence means *this*
+# turn's process is gone -- and with it, any telemetry it flushed on exit.
+AGENT_EXIT_PATH = "/tmp/sbx-agent-exit"  # noqa: S108
 
 
 def sbx_create_detached(
@@ -28,6 +33,8 @@ def sbx_create_detached(
     provider: str | None = None,
     model: str | None = None,
     env: dict[str, str] | None = None,
+    cpus: int | None = None,
+    memory: str | None = None,
 ) -> None:
     """
     Create a sandbox (in --clone mode) without attaching or launching the
@@ -59,12 +66,22 @@ def sbx_create_detached(
             From config.resolve_env -- e.g. `ANTHROPIC_BASE_URL` /
             `ANTHROPIC_AUTH_TOKEN` to route the agent CLI at a local
             Ollama instead of the proxy-managed cloud credential.
+        cpus: `--cpus`, CPUs for the sandbox's VM. None keeps sbx's
+            default (every host CPU).
+        memory: `--memory`, e.g. "2g". None keeps sbx's default (half the
+            host's memory). Both are hard limits: verified on v0.48.0 that
+            `nproc` and `free` inside the sandbox report them, and that
+            allocating past the memory limit fails.
     """
     cmd = ["sbx", "create", "--clone", agent, "--name", sandbox_name]
     for kit_ref in kit or []:
         cmd += ["--kit", kit_ref]
     for key, value in sorted((env or {}).items()):
         cmd += ["-e", f"{key}={value}"]
+    if cpus is not None:
+        cmd += ["--cpus", str(cpus)]
+    if memory is not None:
+        cmd += ["--memory", memory]
     if provider:
         cmd += ["--provider", provider]
         if model:
@@ -369,6 +386,7 @@ def build_agent_invocation(
     skip_permissions_override: bool | None = None,
     command_override: str | None = None,
     resume: bool = False,
+    otel_url: str | None = None,
 ) -> str:
     """Builds the shell command string that runs one agent turn.
 
@@ -387,6 +405,9 @@ def build_agent_invocation(
             report status however it likes. Required for agent_id
             "shell"; optional escape hatch for any other agent_id.
         resume: Whether this is a resume (follow-up) turn.
+        otel_url: OTLP/HTTP logs URL to export the CLI's telemetry to (see
+            agent_otel). Ignored with command_override, which replaces the
+            registered CLI invocation the settings attach to.
 
     Returns:
         A shell command string (may be multiple lines when
@@ -408,6 +429,8 @@ def build_agent_invocation(
         skip_permissions_override=skip_permissions_override,
         resume=resume,
     )
+    if otel_url:
+        argv = with_otel(agent_id, argv, otel_url)
     return shlex.join(argv)
 
 
@@ -433,7 +456,9 @@ status_path.write_text(json.dumps({
 """
 
 
-def build_agent_shell_command(cmd_str: str, status_file: str, log_path: str) -> str:
+def build_agent_shell_command(
+    cmd_str: str, status_file: str, log_path: str, exit_path: str = AGENT_EXIT_PATH
+) -> str:
     """Builds the `bash -lc` script that runs the agent and guarantees a
     status file exists afterward.
 
@@ -444,6 +469,9 @@ def build_agent_shell_command(cmd_str: str, status_file: str, log_path: str) -> 
             which is what the trailing "> log 2>&1" below attaches to.
         status_file: Workspace-relative path the agent is expected to write.
         log_path: Where to redirect the agent's stdout/stderr.
+        exit_path: Where to record the exit code once the agent has exited.
+            Written last, after the fallback status, so it marks the end of
+            everything this turn does.
 
     Returns:
         A shell script: run the agent, capture its exit code, and -- only
@@ -451,6 +479,7 @@ def build_agent_shell_command(cmd_str: str, status_file: str, log_path: str) -> 
         `python3 -c`, with the log tail and exit code passed as argv so no
         shell-escaping of log content is ever needed.
     """
+    exit_q = shlex.quote(exit_path)
     log_q = shlex.quote(log_path)
     status_q = shlex.quote(status_file)
     fallback_q = shlex.quote(STATUS_FALLBACK_PY)
@@ -460,6 +489,7 @@ def build_agent_shell_command(cmd_str: str, status_file: str, log_path: str) -> 
         f"if [ ! -f {status_q} ]; then\n"
         f'  python3 -c {fallback_q} {status_q} {log_q} "$EXIT_CODE"\n'
         f"fi\n"
+        f'echo "$EXIT_CODE" > {exit_q}\n'
         f'exit "$EXIT_CODE"\n'
     )
 
@@ -491,6 +521,12 @@ def sbx_launch_agent(
         resume: Whether to resume the most recent session instead of
             starting fresh.
     """
+    endpoint = config.agent_otel_endpoint
+    otel_url = (
+        logs_endpoint(endpoint, sandbox_name)
+        if endpoint and exports_otel(agent_id, command_override, endpoint)
+        else None
+    )
     cmd_str = build_agent_invocation(
         agent_id,
         prompt,
@@ -499,6 +535,7 @@ def sbx_launch_agent(
         skip_permissions_override=skip_permissions_override,
         command_override=command_override,
         resume=resume,
+        otel_url=otel_url,
     )
     shell_cmd = build_agent_shell_command(cmd_str, config.status_file, AGENT_LOG_PATH)
     # No `-d`: sbx v0.48.0 rejects it outright ("--detach is not supported
@@ -508,7 +545,30 @@ def sbx_launch_agent(
     # exec session's pipes, so `sbx exec` has nothing left to wait on and
     # returns immediately. Verified on v0.48.0 that the child outlives the
     # exec session.
-    detached_cmd = f"({shell_cmd}) </dev/null >/dev/null 2>&1 &\ndisown 2>/dev/null || true\n"
+    #
+    # The previous turn's status file is removed first, in the foreground, so
+    # it is gone before this call returns. Otherwise a resumed job's first
+    # poll reads the old `awaiting_input` and ends the turn before the agent
+    # has started -- verified live on v0.48.0, where an answered job bounced
+    # straight back to its old question while the agent ran on unwatched.
+    #
+    # The status file lives in the repo root, so an agent that runs
+    # `git add -A` would commit it onto its feature branch. Excluding it in
+    # the clone's own info/exclude keeps it out of every diff without
+    # touching a tracked .gitignore. Idempotent, since this runs every turn.
+    # The launch runs at the clone root, where `sbx create --clone` leaves a
+    # real .git directory; anywhere else this is a harmless no-op.
+    status_q = shlex.quote(config.status_file)
+    exclude_q = shlex.quote("/" + config.status_file.lstrip("/"))
+    detached_cmd = (
+        f"rm -f {status_q} {shlex.quote(AGENT_EXIT_PATH)}\n"
+        "if [ -d .git ]; then\n"
+        "  mkdir -p .git/info\n"
+        f"  grep -qxF {exclude_q} .git/info/exclude 2>/dev/null"
+        f" || echo {exclude_q} >> .git/info/exclude\n"
+        "fi\n"
+        f"({shell_cmd}) </dev/null >/dev/null 2>&1 &\ndisown 2>/dev/null || true\n"
+    )
     run(
         ["sbx", "exec", sandbox_name, "bash", "-lc", detached_cmd],
         options=RunOptions(capture=False),
@@ -612,6 +672,26 @@ def sbx_exec_capture(
     return run(argv, options=RunOptions(check=False))
 
 
+def sbx_agent_exited(sandbox_name: str) -> bool:
+    """Whether this turn's agent process has exited.
+
+    An agent reports its status *before* it exits -- it writes the status
+    file, then may make one more model request and flush its telemetry --
+    so a terminal status alone does not mean the process is done.
+
+    Args:
+        sandbox_name: Sandbox to check.
+
+    Returns:
+        True once the launch wrapper has written AGENT_EXIT_PATH. False
+        while the agent runs, and also when the sandbox can't be reached.
+    """
+    result = sbx_exec_capture(
+        sandbox_name, f"test -f {shlex.quote(AGENT_EXIT_PATH)}", login_shell=False
+    )
+    return result.returncode == 0
+
+
 def sbx_read_status(sandbox_name: str, status_file: str) -> dict | None:
     """Reads and parses the agent's JSON status file.
 
@@ -702,6 +782,26 @@ def sbx_tail_log(sandbox_name: str, log_path: str, tail_lines: int) -> str:
         sandbox_name, f"tail -n {tail_lines} {shlex.quote(log_path)} 2>/dev/null", login_shell=False
     )
     return result.stdout
+
+
+def sbx_allow_network(sandbox_name: str, resource: str) -> bool:
+    """Adds a network allow rule scoped to one sandbox.
+
+    Scoped rules live in sbx's local policy and are removed along with the
+    sandbox (verified on v0.48.0), so nothing outlives the job.
+
+    Args:
+        sandbox_name: The sandbox the rule applies to.
+        resource: A "host:port" resource, e.g. "localhost:8000".
+
+    Returns:
+        Whether sbx accepted the rule.
+    """
+    result = run(
+        ["sbx", "policy", "allow", "network", "--sandbox", sandbox_name, resource],
+        options=RunOptions(check=False),
+    )
+    return result.returncode == 0
 
 
 def sbx_rm(sandbox_name: str) -> None:

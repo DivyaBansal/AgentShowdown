@@ -4,20 +4,20 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
+from backend.logging import log
+from backend.model_catalog import catalog
+from backend.orchestrator.agent_otel import DEFAULT_AGENT_OTEL_ENDPOINT
 from backend.orchestrator.process import CommandError
 
-# Known-valid --model values per agent_id, used by validate_model to catch
-# typos/stale model names before any sandbox is created. An agent_id with no
-# entry here (cursor, opencode, copilot) isn't validated at all -- same
-# "best-effort, verify against the installed CLI" caveat as their
-# AGENT_CLI_BUILDERS entries in sbx.py, since we have no verified model list
-# for them yet. Add an entry once one is confirmed against a real installed
-# CLI (see the "claude" and "codex" entries below for how).
+# Built-in model suggestions used before an explicit model catalog update.
+# Catalog membership is advisory; the launched CLI verifies actual access.
 #
 # claude: from this environment's own live model-id roster (Fable 5, Opus 5,
 # Sonnet 5, Haiku 4.5) plus the undated "claude-haiku-4-5" alias already used
@@ -61,25 +61,19 @@ DEFAULT_MODELS: dict[str, str] = {
 
 
 def validate_model(agent_id: str, model: str) -> None:
-    """Raises if `model` isn't a recognized model for `agent_id`.
+    """Warns about unlisted names, leaving access checks to the launched CLI.
 
-    Agents with no KNOWN_MODELS entry are skipped rather than treated as
-    invalid -- see the KNOWN_MODELS module docstring comment.
-
-    Args:
-        agent_id: The sbx agent type (e.g. "claude", "codex").
-        model: The resolved model name (from resolve_model).
-
-    Raises:
-        CommandError: If agent_id has a KNOWN_MODELS entry and model isn't
-            in it.
+    Suggestions come from the saved catalog, or built-ins before an explicit
+    refresh. Reading them never triggers discovery.
     """
-    valid = KNOWN_MODELS.get(agent_id)
-    if valid is None or model in valid:
+    valid = catalog(agent_id, sorted(KNOWN_MODELS.get(agent_id, ())))["models"]
+    if not model or model in valid:
         return
-    raise CommandError(
-        f"Unknown model '{model}' for agent_id '{agent_id}'. "
-        f"Known models: {', '.join(sorted(valid))}"
+    log.warning(
+        "model_not_in_catalog",
+        agent_id=agent_id,
+        model=model,
+        detail="The agent CLI will check model access at launch",
     )
 
 
@@ -151,6 +145,54 @@ def host_repo_path(config: Config) -> str:
 
 
 VERIFY_ON_CHOICES = ("host", "sandbox")
+
+# `sbx create --memory` takes binary units ("512m", "8g") and refuses less
+# than 512 MiB or more than 75% of host memory; `--cpus` refuses more than
+# the host has. Verified against sbx v0.48.0, whose VM-backed sandboxes then
+# report exactly that many CPUs (`nproc`) and that much RAM (`free`).
+MIN_SANDBOX_MEMORY_MIB = 512
+_MEMORY_LIMIT_RE = re.compile(r"^(\d+)([mg])$")
+
+
+def _host_memory_mib() -> int:
+    """Total physical memory on this host, in MiB."""
+    return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // (1024 * 1024)
+
+
+def validate_sandbox_limits(cpus: int | None, memory: str | None) -> str | None:
+    """Checks per-sandbox limits against the bounds `sbx create` enforces.
+
+    Checked up front because sbx's own refusal happens at launch, after the
+    job is already recorded, and its message only reaches the server's
+    terminal (sbx create runs uncaptured).
+
+    Args:
+        cpus: CPUs per sandbox, or None for sbx's default (every host CPU).
+        memory: Memory per sandbox such as "2g", or None for sbx's default.
+
+    Returns:
+        `memory` normalized to lowercase, or None.
+
+    Raises:
+        ValueError: If either limit is one sbx would reject on this host.
+    """
+    host_cpus = os.cpu_count() or 1
+    if cpus is not None and not 1 <= cpus <= host_cpus:
+        raise ValueError(f"cpus must be between 1 and {host_cpus} (this host's CPU count)")
+    if memory is None:
+        return None
+    normalized = memory.strip().lower()
+    match = _MEMORY_LIMIT_RE.fullmatch(normalized)
+    if match is None:
+        raise ValueError('memory must be a whole number of MiB or GiB, e.g. "512m" or "4g"')
+    mib = int(match[1]) * (1024 if match[2] == "g" else 1)
+    max_mib = max(_host_memory_mib() * 3 // 4, MIN_SANDBOX_MEMORY_MIB)
+    if not MIN_SANDBOX_MEMORY_MIB <= mib <= max_mib:
+        raise ValueError(
+            f"memory must be between {MIN_SANDBOX_MEMORY_MIB}m and {max_mib}m "
+            "(75% of this host's memory)"
+        )
+    return normalized
 
 
 def _validated_verify_on(value: str) -> str:
@@ -254,6 +296,15 @@ class Config:
     # Opening a PR is an outward-facing side effect on a real repo, so a UI
     # that can trigger runs must opt into it. The branch is still pushed.
     open_pr: bool = False
+    # Per-sandbox resource limits for `sbx create --cpus/--memory`, set per
+    # run (UI or CLI) rather than in config.yaml. None keeps sbx's default:
+    # every host CPU and half the host's memory (capped at 32 GiB).
+    cpus: int | None = None
+    memory: str | None = None
+    # Base URL of this server's OTLP receiver as seen from inside a sandbox.
+    # claude and codex export their OTel events there (see agent_otel);
+    # None or "" turns that off.
+    agent_otel_endpoint: str | None = DEFAULT_AGENT_OTEL_ENDPOINT
 
     @staticmethod
     def load(path: str) -> Config:
@@ -311,6 +362,8 @@ class Config:
             verify_on=_validated_verify_on(raw["run"].get("verify_on", "host")),
             capture_usage=raw["run"].get("capture_usage", True),
             log_tail_lines=raw["run"].get("log_tail_lines", 200),
+            agent_otel_endpoint=raw["run"].get("agent_otel_endpoint", DEFAULT_AGENT_OTEL_ENDPOINT)
+            or None,
             open_pr=raw["github"].get("open_pr", False),
             state_db_path=raw.get("state_db_path", "./orchestrator_state.sqlite3"),
             agent_profiles=agent_profiles,
@@ -332,8 +385,8 @@ class AgentSpec:
             twice to compare non-determinism).
         model: Per-spec model override. Falls back to the agent's
             AgentProfile default, then its DEFAULT_MODELS entry (if any),
-            then config.model (see resolve_model). Validated against
-            KNOWN_MODELS in expand_jobs before any sandbox is created.
+            then config.model (see resolve_model). Unlisted names produce
+            an advisory warning; the agent CLI verifies model access.
         command: Custom shell command that replaces the registered
             AGENT_CLI_BUILDERS entry entirely -- run verbatim inside the
             sandbox with ORCH_PROMPT/ORCH_STATUS_FILE/ORCH_RESUME
@@ -356,7 +409,7 @@ class AgentSpec:
             (`-e KEY=VALUE`). Merged over the agent's AgentProfile.env
             key-by-key (see resolve_env). Setting a
             CUSTOM_ENDPOINT_ENV_KEYS var (e.g. `ANTHROPIC_BASE_URL`) also
-            waives KNOWN_MODELS validation for this job.
+            suppresses catalog warnings for this job.
     """
 
     agent_id: str

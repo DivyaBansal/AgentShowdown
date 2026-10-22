@@ -96,6 +96,7 @@ def config_to_mapping(config: Config) -> dict[str, Any]:
             "telemetry": config.telemetry,
             "telemetry_interval_seconds": config.telemetry_interval_seconds,
             "capture_usage": config.capture_usage,
+            "agent_otel_endpoint": config.agent_otel_endpoint,
             "remove_sandbox_on_success": config.remove_sandbox_on_success,
             "remove_sandbox_on_failure": config.remove_sandbox_on_failure,
         },

@@ -21,6 +21,7 @@ import threading
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import TYPE_CHECKING
 
 from backend.logging import log
@@ -28,19 +29,26 @@ from backend.orchestrator.config import AgentSpec
 from backend.orchestrator.events import bus
 from backend.orchestrator.job import (
     expand_jobs,
+    option_text_for,
+    plan_followup,
     plan_respawn,
+    plan_resume,
     reattach_job,
+    relaunch_and_await,
     respawn_job,
     run_all,
     sandbox_name_for,
     spec_for_job,
 )
 from backend.orchestrator.process import CommandError
+from backend.orchestrator.prompt import build_followup_prompt, build_resume_prompt
 from backend.orchestrator.sbx import sbx_list
 from backend.orchestrator.state import StateStore
 from backend.orchestrator.telemetry import TelemetrySampler
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from backend.api.models import RunEntryIn, StartRunRequest
     from backend.orchestrator.config import Config, Feature
     from backend.orchestrator.telemetry import Sample
@@ -164,6 +172,8 @@ def apply_overrides(config: Config, request: StartRunRequest) -> Config:
             ("verify_on", request.verify_on),
             ("open_pr", request.open_pr),
             ("max_concurrency", request.max_concurrency),
+            ("cpus", request.cpus),
+            ("memory", request.memory),
         )
         if value is not None
     }
@@ -331,19 +341,86 @@ def start_respawn(config: Config, features: dict[str, Feature], sandbox_name: st
     feature, spec, in_place = plan_respawn(config, features, sandbox_name)
     _claim({sandbox_name: f"respawn:{sandbox_name}"})
     log.info("job_respawn_requested", sandbox_name=sandbox_name, in_place=in_place)
-    _dispatcher.submit(_execute_respawn, config, feature, spec, sandbox_name, in_place=in_place)
+    work = partial(respawn_job, config, feature, spec, sandbox_name, in_place=in_place)
+    _dispatcher.submit(_execute_claimed, config, sandbox_name, "job_respawn_failed", work)
 
 
-def _execute_respawn(
-    config: Config, feature: Feature, spec: AgentSpec, sandbox_name: str, *, in_place: bool
+def start_answer(
+    config: Config, features: dict[str, Feature], sandbox_name: str, reply: str | int
 ) -> None:
-    """Runs a validated respawn, releasing its claim when done either way."""
+    """Validates an answer to a waiting agent, then resumes it in the background.
+
+    The request returns as soon as the answer is accepted: relaunching the
+    agent and then waiting for it to finish can take as long as the job's
+    timeout, which is no reason to hold an HTTP request open.
+
+    The job is deliberately left `awaiting_input` until the background
+    relaunch flips it to `running`. Writing a transitional status here
+    instead would strand the row if the server restarted before the
+    relaunch happened, since restart recovery only handles queued/running
+    jobs; leaving it as-is means the worst case is simply answering again.
+    The claim is what stops a double submit in the meantime.
+
+    Args:
+        config: Orchestrator config.
+        features: Loaded features, keyed by id.
+        sandbox_name: The job to answer.
+        reply: The answer text, or the index of one of the options the
+            agent offered with its question.
+
+    Raises:
+        CommandError: If the job can't be answered right now (see
+            `job.plan_resume`), or `reply` is an option it didn't offer.
+        RunConflictError: If something else already owns this sandbox.
+    """
+    job, feature, spec = plan_resume(config, features, sandbox_name)
+    answer = option_text_for(job, reply) if isinstance(reply, int) else reply
+    _claim({sandbox_name: f"answer:{sandbox_name}"})
+    log.info("job_answer_received", sandbox_name=sandbox_name, via_option=isinstance(reply, int))
+    prompt = build_resume_prompt(answer, config.status_file)
+    work = partial(relaunch_and_await, config, job, feature, spec, prompt, event="job_resuming")
+    _dispatcher.submit(_execute_claimed, config, sandbox_name, "job_answer_failed", work)
+
+
+def start_followup(
+    config: Config, features: dict[str, Feature], sandbox_name: str, instruction: str
+) -> None:
+    """Validates a follow-up instruction, then relaunches the job in the background.
+
+    Args:
+        config: Orchestrator config.
+        features: Loaded features, keyed by id.
+        sandbox_name: The job to follow up on.
+        instruction: What the human wants the agent to do next.
+
+    Raises:
+        CommandError: If the job can't take a follow-up right now -- see
+            `job.plan_followup`.
+        RunConflictError: If something else already owns this sandbox.
+    """
+    job, feature, spec = plan_followup(config, features, sandbox_name)
+    _claim({sandbox_name: f"followup:{sandbox_name}"})
+    log.info("job_followup_requested", sandbox_name=sandbox_name)
+    prompt = build_followup_prompt(instruction, config.status_file)
+    work = partial(relaunch_and_await, config, job, feature, spec, prompt, event="job_following_up")
+    _dispatcher.submit(_execute_claimed, config, sandbox_name, "job_followup_failed", work)
+
+
+def _execute_claimed(
+    config: Config, sandbox_name: str, failure_event: str, work: Callable[[], None]
+) -> None:
+    """Runs claimed background work for one job, releasing the claim either way.
+
+    A failure is recorded on the job as "error" rather than raised: this
+    runs on the dispatcher, where an exception would vanish into a future
+    nobody reads.
+    """
     try:
-        respawn_job(config, feature, spec, sandbox_name, in_place=in_place)
+        work()
     except Exception:  # noqa: BLE001 -- must not kill the dispatcher
         with StateStore(config.state_db_path) as store:
             store.upsert(sandbox_name, status="error", detail=traceback.format_exc()[-2000:])
-        log.error("job_respawn_failed", exc_info=True)
+        log.error(failure_event, exc_info=True)
     finally:
         _release([sandbox_name])
 

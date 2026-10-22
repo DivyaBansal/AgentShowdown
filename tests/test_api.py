@@ -177,7 +177,7 @@ def test_a_batch_that_fails_validation_starts_nothing(monkeypatch: pytest.Monkey
 
     resp = client.post(
         "/runs",
-        json={"entries": [_entry("f1"), _entry("f2", model="gpt-4-turbo")]},
+        json={"entries": [_entry("f1"), _entry("missing-feature")]},
     )
 
     assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
@@ -250,6 +250,177 @@ def test_respawn_dispatches_in_the_background(monkeypatch: pytest.MonkeyPatch) -
     assert response.status_code == HTTPStatus.ACCEPTED
     assert response.json() == {"status": "respawning", "sandbox_name": "arena-f1-claude"}
     assert len(submitted) == 1
+
+
+# --- answer / follow-up --------------------------------------------------------
+
+_LIVE_BOX = json.dumps({"sandboxes": [{"name": "arena-f1-claude", "status": "running"}]})
+
+
+def _seed_job(status: str, **fields: object) -> None:
+    with StateStore(load_config().state_db_path) as store:
+        store.upsert(
+            "arena-f1-claude",
+            feature_id="f1",
+            agent_id="claude",
+            branch="agent/f1/claude",
+            status=status,
+            **fields,
+        )
+
+
+def _run_dispatch_inline(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Runs dispatched work synchronously, capturing the relaunch prompt
+    instead of launching an agent."""
+    prompts: list[str] = []
+    monkeypatch.setattr(runner_module._dispatcher, "submit", lambda fn, *a, **k: fn(*a, **k))
+    monkeypatch.setattr(
+        runner_module,
+        "relaunch_and_await",
+        lambda config, job, feature, spec, prompt, **k: prompts.append(prompt),
+    )
+    return prompts
+
+
+def test_answer_returns_at_once_and_resumes_in_the_background(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The resumed run can last as long as the job's timeout -- the request
+    must not wait for it."""
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed(_LIVE_BOX))
+    submitted: list[object] = []
+    monkeypatch.setattr(runner_module._dispatcher, "submit", lambda *a, **k: submitted.append(a))
+    _seed_job("awaiting_input", detail="which option?")
+
+    response = client.post("/jobs/arena-f1-claude/answer", json={"answer": "use B"})
+
+    assert response.status_code == HTTPStatus.ACCEPTED
+    assert response.json() == {"status": "resuming", "sandbox_name": "arena-f1-claude"}
+    assert len(submitted) == 1
+
+
+def test_answer_relays_the_text_to_the_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed(_LIVE_BOX))
+    prompts = _run_dispatch_inline(monkeypatch)
+    _seed_job("awaiting_input")
+
+    client.post("/jobs/arena-f1-claude/answer", json={"answer": "use the second approach"})
+
+    assert "use the second approach" in prompts[0]
+
+
+def test_answer_by_option_relays_that_options_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed(_LIVE_BOX))
+    prompts = _run_dispatch_inline(monkeypatch)
+    _seed_job("awaiting_input", question_options='["Keep the old API", "Break it"]')
+
+    response = client.post("/jobs/arena-f1-claude/answer", json={"option_index": 1})
+
+    assert response.status_code == HTTPStatus.ACCEPTED
+    assert "Break it" in prompts[0]
+
+
+def test_answer_by_an_option_that_was_not_offered_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed(_LIVE_BOX))
+    monkeypatch.setattr(runner_module._dispatcher, "submit", _refuse)
+    _seed_job("awaiting_input", question_options='["Only one"]')
+
+    response = client.post("/jobs/arena-f1-claude/answer", json={"option_index": 2})
+
+    assert response.status_code == HTTPStatus.CONFLICT
+    # Rejected before anything was claimed, so a correct retry can go through.
+    assert "arena-f1-claude" not in runner_module._claims
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{}, {"answer": "B", "option_index": 0}, {"answer": ""}, {"option_index": -1}],
+)
+def test_answer_needs_exactly_one_valid_reply(body: dict) -> None:
+    response = client.post("/jobs/arena-f1-claude/answer", json=body)
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+def test_answer_to_a_job_that_is_not_waiting_is_a_conflict() -> None:
+    _seed_job("running")
+
+    response = client.post("/jobs/arena-f1-claude/answer", json={"answer": "B"})
+
+    assert response.status_code == HTTPStatus.CONFLICT
+    assert "not 'awaiting_input'" in response.json()["detail"]
+
+
+def test_a_second_answer_while_the_first_is_resuming_is_a_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row stays awaiting_input until the relaunch flips it, so the
+    claim is what stops a double submit from launching the agent twice."""
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed(_LIVE_BOX))
+    monkeypatch.setattr(runner_module._dispatcher, "submit", lambda *a, **k: None)
+    _seed_job("awaiting_input")
+    assert (
+        client.post("/jobs/arena-f1-claude/answer", json={"answer": "B"}).status_code
+        == HTTPStatus.ACCEPTED
+    )
+
+    response = client.post("/jobs/arena-f1-claude/answer", json={"answer": "B"})
+
+    assert response.status_code == HTTPStatus.CONFLICT
+
+
+def test_followup_relays_the_instruction_in_the_background(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed(_LIVE_BOX))
+    prompts = _run_dispatch_inline(monkeypatch)
+    _seed_job("tests_failed")
+
+    response = client.post("/jobs/arena-f1-claude/followup", json={"prompt": "fix the flaky test"})
+
+    assert response.status_code == HTTPStatus.ACCEPTED
+    assert response.json() == {"status": "following_up", "sandbox_name": "arena-f1-claude"}
+    assert "fix the flaky test" in prompts[0]
+    assert "arena-f1-claude" not in runner_module._claims  # released once done
+
+
+def test_followup_to_a_running_job_is_a_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed(_LIVE_BOX))
+    _seed_job("running")
+
+    response = client.post("/jobs/arena-f1-claude/followup", json={"prompt": "also do X"})
+
+    assert response.status_code == HTTPStatus.CONFLICT
+
+
+def test_followup_needs_a_prompt() -> None:
+    response = client.post("/jobs/arena-f1-claude/followup", json={"prompt": ""})
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+def test_a_failed_background_relaunch_is_recorded_on_the_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Background work has no caller to raise to; the failure must land on
+    the job, and the claim must still be released."""
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed(_LIVE_BOX))
+    monkeypatch.setattr(runner_module._dispatcher, "submit", lambda fn, *a, **k: fn(*a, **k))
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("launch exploded")
+
+    monkeypatch.setattr(runner_module, "relaunch_and_await", boom)
+    _seed_job("tests_failed")
+
+    client.post("/jobs/arena-f1-claude/followup", json={"prompt": "try again"})
+
+    with StateStore(load_config().state_db_path) as store:
+        job = store.get("arena-f1-claude")
+    assert job is not None
+    assert job["status"] == "error"
+    assert "launch exploded" in job["detail"]
+    assert "arena-f1-claude" not in runner_module._claims
 
 
 def test_respawn_unknown_job_returns_409() -> None:
@@ -345,9 +516,12 @@ def test_unknown_feature_is_rejected_before_anything_is_created(
     assert submitted == []  # nothing dispatched, so no sandbox exists
 
 
-def test_unknown_model_is_rejected() -> None:
-    resp = client.post("/runs", json={"entries": [_entry(model="gpt-4-turbo")]})
-    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+def test_manual_model_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    submitted: list[object] = []
+    monkeypatch.setattr(runner_module._dispatcher, "submit", lambda *a, **k: submitted.append(a))
+    resp = client.post("/runs", json={"entries": [_entry(model="manually-entered-model")]})
+    assert resp.status_code == HTTPStatus.OK
+    assert len(submitted) == 1
 
 
 def test_empty_agent_list_is_rejected_by_the_model() -> None:
@@ -361,6 +535,31 @@ def test_a_batch_with_no_entries_is_rejected() -> None:
 
 def test_malformed_memory_limit_is_rejected() -> None:
     resp = client.post("/runs", json={"entries": [_entry()], "memory": "loads"})
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+def test_sandbox_limits_reach_the_runs_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    submitted: list[tuple] = []
+    monkeypatch.setattr(runner_module._dispatcher, "submit", lambda *a, **k: submitted.append(a))
+
+    resp = client.post("/runs", json={"entries": [_entry()], "cpus": 1, "memory": "1G"})
+
+    assert resp.status_code == HTTPStatus.OK
+    effective = submitted[0][1]
+    assert (effective.cpus, effective.memory) == (1, "1g")
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"memory": "256m"},  # below sbx's 512 MiB floor
+        {"memory": "99999g"},  # above 75% of any real host
+        {"cpus": 0},
+        {"cpus": 100_000},  # more than the host has
+    ],
+)
+def test_sandbox_limits_sbx_would_refuse_are_rejected(limits: dict[str, object]) -> None:
+    resp = client.post("/runs", json={"entries": [_entry()], **limits})
     assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
@@ -470,6 +669,11 @@ def test_remove_sandbox_force_bypasses_the_safeguard(monkeypatch: pytest.MonkeyP
 
     assert response.status_code == HTTPStatus.OK
     assert rm_calls == ["box-1"]
+    with StateStore(config.state_db_path) as store:
+        job = store.get("box-1")
+    assert job is not None
+    # A deliberate removal is not an infrastructure failure.
+    assert job["failure_category"] == "cancelled"
 
 
 def test_remove_sandbox_succeeded_job_skips_the_unpushed_check(
@@ -529,6 +733,24 @@ def test_kill_all_with_confirmation_removes_and_marks_jobs_lost(
 
     assert body["removed"] == ["box-1", "box-2"]
     assert calls == [["sbx", "rm", "--all", "--force"]]
+
+
+def test_kill_all_marks_running_jobs_cancelled_not_infra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config()
+    with StateStore(config.state_db_path) as store:
+        store.upsert("box-1", feature_id="f1", agent_id="claude", status="running")
+    monkeypatch.setattr(sandbox_ops, "sbx_list", lambda: {"box-1": {}})
+    monkeypatch.setattr(sandbox_ops, "run", lambda cmd, **k: None)
+
+    client.post("/sandboxes/kill-all", json={"confirm": "KILL ALL"})
+
+    with StateStore(config.state_db_path) as store:
+        job = store.get("box-1")
+    assert job is not None
+    assert job["status"] == "lost"
+    assert job["failure_category"] == "cancelled"
 
 
 def test_sandboxes_listing_uses_the_json_form(
@@ -644,6 +866,35 @@ def test_get_log_on_a_gone_sandbox_returns_empty_tail_not_an_error(
     body = client.get("/jobs/box-1/log").json()
 
     assert body == {"sandbox_name": "box-1", "tail": ""}
+
+
+def test_get_transcript_parses_json_events_from_the_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sbx_module,
+        "run",
+        lambda *a, **k: _completed(json.dumps({"type": "result", "result": "all done"})),
+    )
+
+    body = client.get("/jobs/box-1/transcript").json()
+
+    assert body["sandbox_name"] == "box-1"
+    assert body["entries"] == [{"index": 0, "kind": "result", "text": "all done"}]
+
+
+def test_get_transcript_empty_for_an_agent_with_no_json_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed("plain text, no JSON\n"))
+
+    body = client.get("/jobs/box-1/transcript").json()
+
+    assert body["entries"] == []
+
+
+def test_get_transcript_rejects_tail_out_of_bounds() -> None:
+    assert client.get("/jobs/box-1/transcript", params={"tail": 0}).status_code == 422
 
 
 def test_start_run_carries_the_full_agent_spec(monkeypatch: pytest.MonkeyPatch) -> None:

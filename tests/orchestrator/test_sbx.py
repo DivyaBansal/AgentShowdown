@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 from backend.orchestrator import sbx
 from backend.orchestrator.config import Config
-from backend.orchestrator.process import CommandError, CommandTimeout
+from backend.orchestrator.process import CommandError, CommandTimeout, RunOptions, run
 
 
 def _config(**overrides) -> Config:
@@ -246,6 +247,61 @@ def test_sbx_launch_agent_does_not_pass_detach_to_exec(
     assert "--detach" not in argv
     # The script still backgrounds itself so the exec returns immediately.
     assert "&\ndisown" in argv[5]
+
+
+def test_sbx_launch_agent_clears_the_previous_turns_status_before_returning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: a resumed job's first poll read the old `awaiting_input`
+    status file and ended the turn before the resumed agent had started.
+
+    Runs the real launch script in a local shell, standing in for the
+    sandbox, with a stale status file present.
+    """
+    stale = tmp_path / ".agent_status.json"
+    stale.write_text('{"state": "awaiting_input", "message": "old question"}')
+    scripts: list[str] = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: scripts.append(cmd[-1]) or _completed())
+    monkeypatch.setattr(sbx, "AGENT_LOG_PATH", str(tmp_path / "run.log"))
+
+    sbx.sbx_launch_agent(
+        "box-1", "shell", "answer", _config(), command_override="sleep 5", resume=True
+    )
+    run(["bash", "-c", scripts[0]], options=RunOptions(cwd=str(tmp_path), timeout=10))
+
+    # Checked as soon as the launch returns, as the first poll would be.
+    assert not stale.exists()
+
+
+def test_sbx_launch_agent_keeps_the_status_file_out_of_the_agents_commits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: an agent that ran `git add -A` committed the orchestrator's
+    status file onto its feature branch, so it showed up in the diff.
+
+    Runs the real launch script twice (a fresh turn, then a resume) in a
+    local git repo standing in for the sandbox's clone.
+    """
+    run(["git", "init", "-q", str(tmp_path)])
+    scripts: list[str] = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: scripts.append(cmd[-1]) or _completed())
+    monkeypatch.setattr(sbx, "AGENT_LOG_PATH", str(tmp_path / "run.log"))
+    monkeypatch.setattr(sbx, "AGENT_EXIT_PATH", str(tmp_path / "exit"))
+
+    sbx.sbx_launch_agent("box-1", "shell", "go", _config(), command_override="true")
+    sbx.sbx_launch_agent("box-1", "shell", "go", _config(), command_override="true", resume=True)
+    for script in scripts:
+        run(["bash", "-c", script], options=RunOptions(cwd=str(tmp_path), timeout=10))
+    (tmp_path / ".agent_status.json").write_text('{"state": "done", "message": "ok"}')
+
+    status = run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        options=RunOptions(cwd=str(tmp_path)),
+    ).stdout
+    assert ".agent_status.json" not in status
+    # Idempotent across turns: one exclude line, not one per launch.
+    exclude = (tmp_path / ".git" / "info" / "exclude").read_text()
+    assert exclude.splitlines().count("/.agent_status.json") == 1
 
 
 def test_sbx_list_uses_the_host_side_json_listing(
@@ -610,6 +666,29 @@ def test_sbx_create_detached_empty_env_adds_no_flags(
     assert calls == [["sbx", "create", "--clone", "claude", "--name", "box-1", "/repo"]]
 
 
+def test_sbx_create_detached_passes_resource_limits_before_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: calls.append(cmd))
+    sbx.sbx_create_detached("box-1", "claude", "/repo", cpus=2, memory="4g")
+    assert calls == [
+        [
+            "sbx",
+            "create",
+            "--clone",
+            "claude",
+            "--name",
+            "box-1",
+            "--cpus",
+            "2",
+            "--memory",
+            "4g",
+            "/repo",
+        ]
+    ]
+
+
 def test_exec_capture_emits_workdir_flag_only_when_set(monkeypatch) -> None:
     """`-w` targets a container path; omitting it keeps the sandbox default."""
     seen: list[list[str]] = []
@@ -658,3 +737,90 @@ def test_sbx_list_empty_when_the_command_hangs(monkeypatch: pytest.MonkeyPatch) 
 
     assert sbx.sbx_list() == {}
     assert sbx.sbx_exists("box-1") is False
+
+
+def test_sbx_launch_agent_exports_claude_telemetry_to_the_jobs_receiver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scripts: list[str] = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: scripts.append(cmd[-1]) or _completed())
+
+    sbx.sbx_launch_agent(
+        "box-1", "claude", "do the thing", _config(agent_otel_endpoint="http://h:8000")
+    )
+
+    assert "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://h:8000/otel/box-1/v1/logs" in scripts[0]
+
+
+def test_sbx_launch_agent_leaves_a_custom_command_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scripts: list[str] = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: scripts.append(cmd[-1]) or _completed())
+
+    sbx.sbx_launch_agent(
+        "box-1",
+        "claude",
+        "do the thing",
+        _config(agent_otel_endpoint="http://h:8000"),
+        command_override="my-script.sh",
+    )
+
+    assert "OTEL_" not in scripts[0]
+
+
+def test_sbx_launch_agent_without_an_endpoint_exports_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scripts: list[str] = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: scripts.append(cmd[-1]) or _completed())
+
+    sbx.sbx_launch_agent("box-1", "codex", "do the thing", _config(agent_otel_endpoint=None))
+
+    assert "otel." not in scripts[0]
+
+
+def test_the_launch_wrapper_records_the_exit_code_after_the_agent_exits(
+    tmp_path: Path,
+) -> None:
+    """Runs the real wrapper locally, standing in for the sandbox."""
+    exit_file = tmp_path / "exit"
+    script = sbx.build_agent_shell_command(
+        "sh -c 'exit 3'", ".agent_status.json", str(tmp_path / "run.log"), str(exit_file)
+    )
+
+    result = run(
+        ["bash", "-c", script],
+        options=RunOptions(cwd=str(tmp_path), timeout=10, check=False),
+    )
+
+    assert result.returncode == 3
+    assert exit_file.read_text().strip() == "3"
+    # Written after the fallback status, so it marks the end of the turn.
+    assert (tmp_path / ".agent_status.json").exists()
+
+
+def test_sbx_launch_agent_clears_the_previous_turns_exit_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scripts: list[str] = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: scripts.append(cmd[-1]) or _completed())
+
+    sbx.sbx_launch_agent("box-1", "claude", "hi", _config())
+
+    first_line = scripts[0].splitlines()[0]
+    assert first_line.startswith("rm -f ")
+    assert sbx.AGENT_EXIT_PATH in first_line
+
+
+@pytest.mark.parametrize(("returncode", "exited"), [(0, True), (1, False)])
+def test_sbx_agent_exited_checks_for_the_exit_marker(
+    monkeypatch: pytest.MonkeyPatch, returncode: int, exited: bool
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        sbx, "run", lambda cmd, **k: calls.append(cmd) or _completed(returncode=returncode)
+    )
+
+    assert sbx.sbx_agent_exited("box-1") is exited
+    assert calls[0][-1] == f"test -f {sbx.AGENT_EXIT_PATH}"

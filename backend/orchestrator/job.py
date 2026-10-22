@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import datetime as dt
+import json
 import shlex
 import time
 import traceback
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from backend.logging import log, set_job_context
+from backend.orchestrator.agent_otel import (
+    exports_otel,
+    policy_resource,
+    prefer_otel_usage,
+    usage_from_events,
+)
 from backend.orchestrator.config import (
     AgentSpec,
     Config,
@@ -28,10 +36,17 @@ from backend.orchestrator.config import (
 from backend.orchestrator.events import bus
 from backend.orchestrator.metrics import parse_diff_numstat, parse_usage
 from backend.orchestrator.process import CommandError
-from backend.orchestrator.prompt import build_continue_prompt, build_prompt, build_resume_prompt
+from backend.orchestrator.prompt import (
+    MAX_QUESTION_OPTIONS,
+    build_continue_prompt,
+    build_prompt,
+    build_resume_prompt,
+)
 from backend.orchestrator.sbx import (
     AGENT_CLI_BUILDERS,
     AGENT_LOG_PATH,
+    sbx_agent_exited,
+    sbx_allow_network,
     sbx_create_detached,
     sbx_exec_capture,
     sbx_exists,
@@ -42,7 +57,7 @@ from backend.orchestrator.sbx import (
     sbx_rm,
     sbx_status,
 )
-from backend.orchestrator.state import StateStore
+from backend.orchestrator.state import StateStore, failure_category_for
 from backend.orchestrator.vcs import (
     diff_numstat,
     fetch_branch,
@@ -55,6 +70,7 @@ from backend.orchestrator.vcs import (
 if TYPE_CHECKING:
     import subprocess
     import threading
+    from collections.abc import Iterator
 
 TERMINAL_STATES = ("done", "stuck", "awaiting_input", "crashed")
 
@@ -82,7 +98,65 @@ _ATTEMPT_RESET: dict[str, object] = {
     "lines_removed": None,
     "tests_passed": None,
     "lint_passed": None,
+    "agent_s": None,
+    "verify_s": None,
+    "push_s": None,
+    "failure_category": None,
+    "question_options": None,
 }
+
+# The phases of a job attempt, each timed into its own column so a slow run
+# shows where the time went. `launch_s` is deliberately not in
+# `_ATTEMPT_RESET`: launch is timed *before* the reset is written, and a
+# reattach launches nothing, so it keeps the value its launch recorded.
+JobStep = Literal["launch", "agent", "verify", "push"]
+_STEP_COLUMNS: dict[JobStep, str] = {
+    "launch": "launch_s",
+    "agent": "agent_s",
+    "verify": "verify_s",
+    "push": "push_s",
+}
+
+
+# An agent reports its status before its process exits: it may still make a
+# final model request, and its CLI flushes OTel events on the way out.
+# Teardown waits for the exit so those last batches reach the receiver,
+# but never longer than this -- a wedged CLI must not hold a job open.
+AGENT_EXIT_TIMEOUT_SECONDS = 30.0
+_AGENT_EXIT_POLL_SECONDS = 1.0
+
+# Statuses after which the agent process is finishing on its own. Others
+# either leave it running on purpose (awaiting_input, stopped), mean it is
+# still running (timed_out), or mean the sandbox is gone (lost).
+_EXITING_STATUSES = ("done", "stuck", "crashed")
+
+
+@contextlib.contextmanager
+def _timed_step(store: StateStore, sandbox_name: str, step: JobStep) -> Iterator[None]:
+    """Times one phase of a job into its `<step>_s` column and logs it.
+
+    The duration is recorded even when the step raises, so a launch that
+    fails after a minute of retrying still shows that minute.
+
+    Args:
+        store: State store to record the duration into.
+        sandbox_name: The job being timed.
+        step: Which phase this is.
+    """
+    started = time.monotonic()
+    outcome = "error"
+    try:
+        yield
+        outcome = "ok"
+    finally:
+        elapsed = time.monotonic() - started
+        store.upsert(sandbox_name, **{_STEP_COLUMNS[step]: round(elapsed, 3)})
+        log.info(
+            "job_step_finished",
+            step=step,
+            duration_ms=round(elapsed * 1000),
+            outcome=outcome,
+        )
 
 
 def _utc_now() -> str:
@@ -92,6 +166,61 @@ def _utc_now() -> str:
     changes; these timestamps are for display and ordering.
     """
     return dt.datetime.now(dt.UTC).isoformat()
+
+
+# An option is a button label in the UI, not a paragraph.
+_MAX_OPTION_CHARS = 200
+
+
+def question_options_from(status: dict) -> str | None:
+    """Extracts the answer options an awaiting_input agent offered, if any.
+
+    The status file is written by the agent, so this is external input:
+    anything that isn't a list of non-empty strings is ignored rather than
+    trusted, and the list is capped in length and per-item size.
+
+    Args:
+        status: The parsed status file.
+
+    Returns:
+        The options as a JSON-encoded list, or None when the state isn't
+        awaiting_input or no usable options were given -- so a terminal
+        state without options also clears any options a previous question
+        left behind.
+    """
+    if status.get("state") != "awaiting_input":
+        return None
+    raw = status.get("options")
+    if not isinstance(raw, list):
+        return None
+    options = [
+        item.strip()[:_MAX_OPTION_CHARS] for item in raw if isinstance(item, str) and item.strip()
+    ][:MAX_QUESTION_OPTIONS]
+    return json.dumps(options) if options else None
+
+
+def option_text_for(job: dict, option_index: int) -> str:
+    """Resolves a chosen option index to the option's text.
+
+    Args:
+        job: The job row, carrying its `question_options` column.
+        option_index: Which offered option the human picked.
+
+    Returns:
+        The option's text, ready to be relayed as the answer.
+
+    Raises:
+        CommandError: If the job offered no options, or the index is out of
+            range for the ones it offered.
+    """
+    raw = job.get("question_options")
+    options = json.loads(raw) if isinstance(raw, str) else []
+    if not isinstance(options, list) or not 0 <= option_index < len(options):
+        raise CommandError(
+            f"Job '{job['sandbox_name']}' has no option {option_index} -- "
+            f"it offered {len(options) if isinstance(options, list) else 0}."
+        )
+    return str(options[option_index])
 
 
 def sandbox_name_for(feature_id: str, spec: AgentSpec) -> str:
@@ -126,10 +255,9 @@ def expand_jobs(
         to Stage 1 behavior.
 
     Raises:
-        CommandError: If an unknown feature id is requested, if an agent
-            entry's resolved model isn't in KNOWN_MODELS for its agent_id,
-            or if two agent entries for one feature would collide on
-            sandbox name.
+        CommandError: If an unknown feature id or unsupported agent is
+            requested, or if two agent entries for one feature would
+            collide on sandbox name.
     """
     if feature_ids is None:
         selected = list(features.values())
@@ -277,7 +405,12 @@ def poll_until_signal(config: Config, store: StateStore, sandbox_name: str, dead
             # fallback wrapper) managed to leave a status behind first.
             status = sbx_read_status(sandbox_name, config.status_file)
             if status and status.get("state") in TERMINAL_STATES:
-                store.upsert(sandbox_name, status=status["state"], detail=status.get("message"))
+                store.upsert(
+                    sandbox_name,
+                    status=status["state"],
+                    detail=status.get("message"),
+                    question_options=question_options_from(status),
+                )
                 return status["state"]
             store.upsert(
                 sandbox_name,
@@ -325,7 +458,12 @@ def poll_until_signal(config: Config, store: StateStore, sandbox_name: str, dead
                 state = status.get("state")
                 message = status.get("message")
                 if state in TERMINAL_STATES:
-                    store.upsert(sandbox_name, status=state, detail=message)
+                    store.upsert(
+                        sandbox_name,
+                        status=state,
+                        detail=message,
+                        question_options=question_options_from(status),
+                    )
                     return state
                 # "unknown"/malformed JSON -- keep polling rather than failing.
                 store.upsert(sandbox_name, status="running", detail=message)
@@ -339,6 +477,54 @@ def poll_until_signal(config: Config, store: StateStore, sandbox_name: str, dead
 
     store.upsert(sandbox_name, status="timed_out")
     return "timed_out"
+
+
+def _await_agent_exit(sandbox_name: str) -> bool:
+    """Waits, bounded, for this turn's agent process to exit.
+
+    Once it has exited, every OTel batch it flushed has been received: the
+    receiver commits each batch before acknowledging it, and the CLI's exit
+    waits on that acknowledgement.
+
+    Args:
+        sandbox_name: The job's sandbox. Gives up after
+            AGENT_EXIT_TIMEOUT_SECONDS.
+
+    Returns:
+        True if the exit was observed, False on timeout.
+    """
+    started = time.monotonic()
+    while True:
+        if sbx_agent_exited(sandbox_name):
+            log.info("agent_exit_observed", waited_ms=round((time.monotonic() - started) * 1000))
+            return True
+        if time.monotonic() - started >= AGENT_EXIT_TIMEOUT_SECONDS:
+            log.warning("agent_exit_wait_timed_out", timeout_seconds=AGENT_EXIT_TIMEOUT_SECONDS)
+            return False
+        time.sleep(_AGENT_EXIT_POLL_SECONDS)
+
+
+def _allow_otel_export(config: Config, sandbox_name: str) -> None:
+    """Lets a new sandbox reach the OTel receiver, which sbx denies by default.
+
+    A refused rule is logged, not raised: the agent runs the same without
+    telemetry, and its usage falls back to the run log.
+
+    Args:
+        config: Orchestrator config (supplies the endpoint).
+        sandbox_name: The just-created sandbox.
+    """
+    if not config.agent_otel_endpoint:
+        return
+    try:
+        resource = policy_resource(config.agent_otel_endpoint)
+    except ValueError:
+        log.warning("otel_network_rule_failed", reason="endpoint has no host")
+        return
+    if sbx_allow_network(sandbox_name, resource):
+        log.info("otel_network_rule_added", resource=resource)
+    else:
+        log.warning("otel_network_rule_failed", resource=resource)
 
 
 def _extract_before_teardown(
@@ -441,85 +627,109 @@ def _finalize_success(
         requested_branch: The branch name the prompt asked for (the agent
             may have used a different one).
     """
-    actual_branch, run_log, container_dir = _extract_before_teardown(
-        config, sandbox_name, requested_branch
-    )
-    if actual_branch != requested_branch:
-        log.warning(
-            "agent_used_unexpected_branch",
-            actual_branch=actual_branch,
-            requested_branch=requested_branch,
+    # The verify step is everything between the agent finishing and the
+    # publish: extract, fetch, diff, then the test and lint commands.
+    failed: tuple[str, subprocess.CompletedProcess] | None = None
+    with _timed_step(store, sandbox_name, "verify"):
+        actual_branch, run_log, container_dir = _extract_before_teardown(
+            config, sandbox_name, requested_branch
         )
-
-    usage = parse_usage(run_log, agent_id)
-    metrics: dict[str, object] = {
-        "branch": actual_branch,
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "num_turns": usage.num_turns,
-    }
-
-    # Fetch (not push) so the work can be verified on the host before any of
-    # it reaches origin.
-    fetch_branch(config.repo_path, sandbox_name)
-    ref = sandbox_ref(sandbox_name, actual_branch)
-
-    files_changed, lines_added, lines_removed = parse_diff_numstat(
-        diff_numstat(config.repo_path, config.base_branch, ref)
-    )
-    metrics |= {
-        "files_changed": files_changed,
-        "lines_added": lines_added,
-        "lines_removed": lines_removed,
-    }
-
-    for command, label, failed_status in (
-        (config.test_command, "tests", "tests_failed"),
-        (config.lint_command, "lint", "lint_failed"),
-    ):
-        if not command:
-            continue
-        log.info(f"{label}_started", command=command, verify_on=config.verify_on)
-        result = _verify(config, sandbox_name, ref, command, container_dir)
-        passed = result.returncode == 0
-        metrics[f"{label}_passed"] = int(passed)
-        if not passed:
-            log.error(
-                f"{label}_failed",
-                command=command,
-                stdout=result.stdout[-2000:],
-                stderr=result.stderr[-2000:],
+        if actual_branch != requested_branch:
+            log.warning(
+                "agent_used_unexpected_branch",
+                actual_branch=actual_branch,
+                requested_branch=requested_branch,
             )
-            store.upsert(
-                sandbox_name,
-                status=failed_status,
-                detail=result.stdout[-2000:],
-                **metrics,
-            )
-            if config.remove_sandbox_on_failure:
-                sbx_rm(sandbox_name)
-            return
 
-    log.info("branch_push_started", branch=actual_branch)
-    push_branch(config.repo_path, sandbox_name, actual_branch)
+        # OTel events first, the run log as the fallback: the events cover
+        # every request in the turn, while the log only has what the CLI
+        # printed -- and nothing at all if it died before printing it.
+        otel_usage = usage_from_events(
+            agent_id,
+            store.get_agent_events(sandbox_name, since=store.get_agent_launched_at(sandbox_name)),
+        )
+        usage = prefer_otel_usage(otel_usage, parse_usage(run_log, agent_id))
+        log.info(
+            "usage_recorded",
+            source="otel" if not otel_usage.is_empty else "log",
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+        )
+        metrics: dict[str, object] = {
+            "branch": actual_branch,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "num_turns": usage.num_turns,
+        }
+
+        # Fetch (not push) so the work can be verified on the host before any
+        # of it reaches origin.
+        fetch_branch(config.repo_path, sandbox_name)
+        ref = sandbox_ref(sandbox_name, actual_branch)
+
+        files_changed, lines_added, lines_removed = parse_diff_numstat(
+            diff_numstat(config.repo_path, config.base_branch, ref)
+        )
+        metrics |= {
+            "files_changed": files_changed,
+            "lines_added": lines_added,
+            "lines_removed": lines_removed,
+        }
+
+        for command, label, failed_status in (
+            (config.test_command, "tests", "tests_failed"),
+            (config.lint_command, "lint", "lint_failed"),
+        ):
+            if not command:
+                continue
+            log.info(f"{label}_started", command=command, verify_on=config.verify_on)
+            result = _verify(config, sandbox_name, ref, command, container_dir)
+            passed = result.returncode == 0
+            metrics[f"{label}_passed"] = int(passed)
+            if not passed:
+                log.error(
+                    f"{label}_failed",
+                    command=command,
+                    stdout=result.stdout[-2000:],
+                    stderr=result.stderr[-2000:],
+                )
+                failed = (failed_status, result)
+                break
+
+    if failed is not None:
+        failed_status, result = failed
+        store.upsert(
+            sandbox_name,
+            status=failed_status,
+            detail=result.stdout[-2000:],
+            **metrics,
+        )
+        if config.remove_sandbox_on_failure:
+            sbx_rm(sandbox_name)
+        return
 
     pr_url = None
-    if config.open_pr:
-        title = f"[{feature.id}] via {agent_id}"
-        body = f"Automated implementation of feature `{feature.id}`.\n\n{feature.description}"
-        pr_url = open_pr(
-            config.repo_path,
-            config.github_repo,
-            actual_branch,
-            config.base_branch,
-            title=title,
-            body=body,
-        )
-        log.info("pr_opened", pr_url=pr_url)
-    else:
-        # The branch is on origin either way; only the PR is gated, because
-        # opening one is an outward-facing side effect on a real repo.
-        log.info("pr_skipped", branch=actual_branch, reason="open_pr disabled")
+    with _timed_step(store, sandbox_name, "push"):
+        log.info("branch_push_started", branch=actual_branch)
+        push_branch(config.repo_path, sandbox_name, actual_branch)
+
+        if config.open_pr:
+            title = f"[{feature.id}] via {agent_id}"
+            body = f"Automated implementation of feature `{feature.id}`.\n\n{feature.description}"
+            pr_url = open_pr(
+                config.repo_path,
+                config.github_repo,
+                actual_branch,
+                config.base_branch,
+                title=title,
+                body=body,
+            )
+            log.info("pr_opened", pr_url=pr_url)
+        else:
+            # The branch is on origin either way; only the PR is gated,
+            # because opening one is an outward-facing side effect on a real
+            # repo.
+            log.info("pr_skipped", branch=actual_branch, reason="open_pr disabled")
 
     store.upsert(sandbox_name, status="succeeded", pr_url=pr_url, **metrics)
 
@@ -536,6 +746,7 @@ def _await_and_finalize(
     feature: Feature,
     agent_id: str,
     requested_branch: str,
+    command_override: str | None = None,
 ) -> None:
     """Polls a launched agent to a terminal state, records timing, then either
     finalizes the successful run or tears the sandbox down.
@@ -548,26 +759,41 @@ def _await_and_finalize(
         store: State store to record into.
         sandbox_name: The job's sandbox.
         started_monotonic: `time.monotonic()` captured at launch, for the
-            timeout deadline and the duration metric.
+            timeout deadline and the duration metric. After a reattach this
+            is the reattach time, so both `duration_seconds` and `agent_s`
+            undercount the time before the restart.
         feature: The feature being implemented.
         agent_id: Which agent implemented it.
         requested_branch: The branch the prompt asked for.
+        command_override: The spec's custom command, if any -- a custom
+            command exports no OTel, so there is nothing to wait for.
     """
     deadline = started_monotonic + config.timeout_minutes * 60
-    final_status = poll_until_signal(config, store, sandbox_name, deadline)
+    with _timed_step(store, sandbox_name, "agent"):
+        final_status = poll_until_signal(config, store, sandbox_name, deadline)
 
+    # poll_until_signal already wrote the status, and with it the category.
     store.upsert(
         sandbox_name,
         finished_at=_utc_now(),
         duration_seconds=round(time.monotonic() - started_monotonic, 3),
     )
-    log.info("job_finished", status=final_status)
+    log.info(
+        "job_finished",
+        status=final_status,
+        failure_category=failure_category_for(final_status),
+    )
 
     if final_status in ("awaiting_input", "stopped"):
         # Sandbox must survive: `answer` resumes an awaiting_input job,
         # `respawn` restarts a stopped one -- either way there's nothing to
         # finalize or tear down yet.
         return
+
+    if final_status in _EXITING_STATUSES and exports_otel(
+        agent_id, command_override, config.agent_otel_endpoint
+    ):
+        _await_agent_exit(sandbox_name)
 
     if final_status != "done":
         if config.remove_sandbox_on_failure:
@@ -645,6 +871,8 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
         model=resolved_model,
         run_label=spec.run_label,
         repo=host_repo_path(config),
+        cpus=config.cpus,
+        memory_limit=config.memory,
     )
     store.set_spec(sandbox_name, spec_to_json(spec))
 
@@ -657,34 +885,40 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
             agent_id=agent_id,
             env_keys=sorted(resolved_env),
         )
-        try:
-            sbx_create_detached(
-                sandbox_name=sandbox_name,
-                agent=agent_id,
-                workspace=config.repo_path,
-                kit=resolve_kit_paths(spec, profile),
-                provider=resolve_provider(spec, profile, config),
-                model=resolved_model,
-                env=resolved_env,
-            )
-        except CommandError:
-            # Likely a race with a concurrent `run` that created it first.
-            if sbx_exists(sandbox_name):
-                log.info("sandbox_create_raced")
+        with _timed_step(store, sandbox_name, "launch"):
+            try:
+                sbx_create_detached(
+                    sandbox_name=sandbox_name,
+                    agent=agent_id,
+                    workspace=config.repo_path,
+                    kit=resolve_kit_paths(spec, profile),
+                    provider=resolve_provider(spec, profile, config),
+                    model=resolved_model,
+                    env=resolved_env,
+                    cpus=config.cpus,
+                    memory=config.memory,
+                )
+            except CommandError:
+                # Likely a race with a concurrent `run` that created it first.
+                if sbx_exists(sandbox_name):
+                    log.info("sandbox_create_raced")
+                else:
+                    raise
             else:
-                raise
-        else:
-            sbx_launch_agent(
-                sandbox_name=sandbox_name,
-                agent_id=agent_id,
-                prompt=prompt,
-                config=config,
-                model_override=resolved_model,
-                skip_permissions_override=resolve_dangerously_skip_permissions(
-                    spec, profile, config
-                ),
-                command_override=spec.command,
-            )
+                if exports_otel(agent_id, spec.command, config.agent_otel_endpoint):
+                    _allow_otel_export(config, sandbox_name)
+                store.set_agent_launched_at(sandbox_name, _utc_now())
+                sbx_launch_agent(
+                    sandbox_name=sandbox_name,
+                    agent_id=agent_id,
+                    prompt=prompt,
+                    config=config,
+                    model_override=resolved_model,
+                    skip_permissions_override=resolve_dangerously_skip_permissions(
+                        spec, profile, config
+                    ),
+                    command_override=spec.command,
+                )
 
     started_monotonic = time.monotonic()
     store.upsert(sandbox_name, status="running", started_at=_utc_now(), **_ATTEMPT_RESET)
@@ -697,67 +931,162 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
         feature=feature,
         agent_id=agent_id,
         requested_branch=branch,
+        command_override=spec.command,
     )
 
 
-def resume_job(
-    config: Config, features: dict[str, Feature], sandbox_name: str, human_answer: str
-) -> None:
-    """Answers a job that is awaiting_input and resumes it to completion.
+def plan_resume(
+    config: Config, features: dict[str, Feature], sandbox_name: str
+) -> tuple[dict, Feature, AgentSpec]:
+    """Validates that a job can be answered right now.
+
+    Kept separate from the relaunch so the HTTP layer can validate
+    synchronously and then do the slow part in the background.
 
     Args:
         config: Orchestrator config.
         features: All loaded features, keyed by id (to look up the one
             this job belongs to).
         sandbox_name: The job to resume.
-        human_answer: The human's answer to the agent's question.
+
+    Returns:
+        (job row, feature, spec) to hand to `relaunch_and_await`.
 
     Raises:
         CommandError: If the job is unknown, isn't awaiting_input, or its
-            sandbox no longer exists.
+            sandbox no longer exists (in which case the job is also marked
+            lost, since nothing can resume it).
     """
-    set_job_context(sandbox_name)
-    store = StateStore(config.state_db_path)
-    job = store.get(sandbox_name)
-    if job is None:
-        raise CommandError(
-            f"No known job '{sandbox_name}'. Run "
-            f"`python -m backend.orchestrator status` to list jobs."
-        )
-    if job["status"] != "awaiting_input":
-        raise CommandError(
-            f"Job '{sandbox_name}' is '{job['status']}', not 'awaiting_input' -- nothing to answer."
-        )
-    if not sbx_exists(sandbox_name):
-        store.upsert(
-            sandbox_name,
-            status="lost",
-            detail="sandbox was removed while awaiting input; rerun the feature "
-            "fresh with a new run_label instead.",
-        )
-        raise CommandError(
-            f"Sandbox '{sandbox_name}' no longer exists -- can't resume it. "
-            f"Rerun the feature fresh (with a new run_label)."
-        )
+    with StateStore(config.state_db_path) as store:
+        job = store.get(sandbox_name)
+        if job is None:
+            raise CommandError(
+                f"No known job '{sandbox_name}'. Run "
+                f"`python -m backend.orchestrator status` to list jobs."
+            )
+        if job["status"] != "awaiting_input":
+            raise CommandError(
+                f"Job '{sandbox_name}' is '{job['status']}', not 'awaiting_input' -- "
+                f"nothing to answer."
+            )
+        if not sbx_exists(sandbox_name):
+            store.upsert(
+                sandbox_name,
+                status="lost",
+                detail="sandbox was removed while awaiting input; rerun the feature "
+                "fresh with a new run_label instead.",
+            )
+            raise CommandError(
+                f"Sandbox '{sandbox_name}' no longer exists -- can't resume it. "
+                f"Rerun the feature fresh (with a new run_label)."
+            )
 
+        feature, spec = _feature_and_spec(config, store, features, job)
+    return job, feature, spec
+
+
+def _feature_and_spec(
+    config: Config, store: StateStore, features: dict[str, Feature], job: dict
+) -> tuple[Feature, AgentSpec]:
+    """Looks up the feature a job row belongs to and the spec it ran under.
+
+    Raises:
+        CommandError: If the feature is gone from the features file.
+    """
     feature = features.get(job["feature_id"])
     if feature is None:
         raise CommandError(f"Feature '{job['feature_id']}' not found in the loaded features file.")
-    spec = spec_for_job(config, store, feature, sandbox_name)
+    return feature, spec_for_job(config, store, feature, job["sandbox_name"])
+
+
+def plan_followup(
+    config: Config, features: dict[str, Feature], sandbox_name: str
+) -> tuple[dict, Feature, AgentSpec]:
+    """Validates that a job can take a follow-up instruction right now.
+
+    Unlike `plan_resume`, this doesn't require the agent to have asked
+    anything -- only that its sandbox is still there, idle, and able to run
+    the agent's most recent session again.
+
+    Args:
+        config: Orchestrator config.
+        features: Loaded features, keyed by id.
+        sandbox_name: The job to follow up on.
+
+    Returns:
+        (job row, feature, spec) to hand to `relaunch_and_await`.
+
+    Raises:
+        CommandError: If the job is unknown, still running (a second
+            launch would race the first), stopped (a stopped container
+            can't exec anything until it's respawned), or its sandbox is
+            gone (nothing left to continue).
+    """
+    with StateStore(config.state_db_path) as store:
+        job = store.get(sandbox_name)
+        if job is None:
+            raise CommandError(f"No known job '{sandbox_name}'.")
+        status = job["status"]
+        if status in ("queued", "running"):
+            raise CommandError(
+                f"Job '{sandbox_name}' is still {status} -- wait for it to finish, or "
+                f"stop it, before sending a follow-up."
+            )
+        if status == "stopped":
+            raise CommandError(
+                f"Job '{sandbox_name}' is stopped -- respawn it first; a stopped "
+                f"sandbox can't run anything."
+            )
+        if not sbx_exists(sandbox_name):
+            raise CommandError(
+                f"Sandbox '{sandbox_name}' no longer exists, so there's no session to "
+                f"follow up on. Respawn the job instead."
+            )
+        feature, spec = _feature_and_spec(config, store, features, job)
+    return job, feature, spec
+
+
+def relaunch_and_await(
+    config: Config,
+    job: dict,
+    feature: Feature,
+    spec: AgentSpec,
+    prompt: str,
+    *,
+    event: str,
+) -> None:
+    """Relaunches a job's agent in resume mode with `prompt`, to completion.
+
+    The shared second half of answering and following up: both continue the
+    agent's most recent session inside the existing sandbox, then poll and
+    finalize exactly as a first run does.
+
+    Args:
+        config: Orchestrator config.
+        job: The job row, from `plan_resume` / `plan_followup`.
+        feature: The feature being implemented.
+        spec: The agent spec it runs under.
+        prompt: What to tell the agent on this turn.
+        event: Structured log event naming why it was relaunched.
+    """
+    sandbox_name = job["sandbox_name"]
+    set_job_context(sandbox_name)
+    store = StateStore(config.state_db_path)
     profile = config.agent_profiles.get(spec.agent_id)
 
-    prompt = build_resume_prompt(human_answer, config.status_file)
-    log.info("job_resuming")
-    sbx_launch_agent(
-        sandbox_name=sandbox_name,
-        agent_id=spec.agent_id,
-        prompt=prompt,
-        config=config,
-        model_override=resolve_model(spec, profile, config),
-        skip_permissions_override=resolve_dangerously_skip_permissions(spec, profile, config),
-        command_override=spec.command,
-        resume=True,
-    )
+    log.info(event)
+    with _timed_step(store, sandbox_name, "launch"):
+        store.set_agent_launched_at(sandbox_name, _utc_now())
+        sbx_launch_agent(
+            sandbox_name=sandbox_name,
+            agent_id=spec.agent_id,
+            prompt=prompt,
+            config=config,
+            model_override=resolve_model(spec, profile, config),
+            skip_permissions_override=resolve_dangerously_skip_permissions(spec, profile, config),
+            command_override=spec.command,
+            resume=True,
+        )
     started_monotonic = time.monotonic()
     store.upsert(
         sandbox_name, status="running", detail=None, started_at=_utc_now(), **_ATTEMPT_RESET
@@ -771,7 +1100,32 @@ def resume_job(
         feature=feature,
         agent_id=job["agent_id"],
         requested_branch=job["branch"],
+        command_override=spec.command,
     )
+
+
+def resume_job(
+    config: Config, features: dict[str, Feature], sandbox_name: str, human_answer: str
+) -> None:
+    """Answers a job that is awaiting_input and resumes it to completion.
+
+    Synchronous end to end -- the CLI's `answer` path. The HTTP layer runs
+    the same two halves (`plan_resume`, `relaunch_and_await`) with the
+    second in the background instead.
+
+    Args:
+        config: Orchestrator config.
+        features: All loaded features, keyed by id.
+        sandbox_name: The job to resume.
+        human_answer: The human's answer to the agent's question.
+
+    Raises:
+        CommandError: See `plan_resume`.
+    """
+    set_job_context(sandbox_name)
+    job, feature, spec = plan_resume(config, features, sandbox_name)
+    prompt = build_resume_prompt(human_answer, config.status_file)
+    relaunch_and_await(config, job, feature, spec, prompt, event="job_resuming")
 
 
 # Respawning a job in this state would either race whatever already has it
@@ -850,17 +1204,19 @@ def _respawn_in_place(config: Config, feature: Feature, spec: AgentSpec, sandbox
     store = StateStore(config.state_db_path)
     profile = config.agent_profiles.get(spec.agent_id)
     log.info("job_respawning_in_place")
-    sbx_restart_detached(sandbox_name, spec.agent_id)
-    sbx_launch_agent(
-        sandbox_name=sandbox_name,
-        agent_id=spec.agent_id,
-        prompt=build_continue_prompt(config.status_file),
-        config=config,
-        model_override=resolve_model(spec, profile, config),
-        skip_permissions_override=resolve_dangerously_skip_permissions(spec, profile, config),
-        command_override=spec.command,
-        resume=True,
-    )
+    with _timed_step(store, sandbox_name, "launch"):
+        sbx_restart_detached(sandbox_name, spec.agent_id)
+        store.set_agent_launched_at(sandbox_name, _utc_now())
+        sbx_launch_agent(
+            sandbox_name=sandbox_name,
+            agent_id=spec.agent_id,
+            prompt=build_continue_prompt(config.status_file),
+            config=config,
+            model_override=resolve_model(spec, profile, config),
+            skip_permissions_override=resolve_dangerously_skip_permissions(spec, profile, config),
+            command_override=spec.command,
+            resume=True,
+        )
     started_monotonic = time.monotonic()
     store.upsert(
         sandbox_name, status="running", detail=None, started_at=_utc_now(), **_ATTEMPT_RESET
@@ -874,6 +1230,7 @@ def _respawn_in_place(config: Config, feature: Feature, spec: AgentSpec, sandbox
         feature=feature,
         agent_id=spec.agent_id,
         requested_branch=branch_for(feature.id, spec),
+        command_override=spec.command,
     )
 
 
@@ -932,6 +1289,7 @@ def reattach_job(config: Config, feature: Feature, spec: AgentSpec, sandbox_name
         feature=feature,
         agent_id=spec.agent_id,
         requested_branch=branch,
+        command_override=spec.command,
     )
 
 

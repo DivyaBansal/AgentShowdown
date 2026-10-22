@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from backend.api import sandboxes as sandbox_ops
 from backend.api.models import (
     AnswerRequest,
+    FollowupRequest,
     JobQuery,
     KillAllRequest,
     LogQuery,
@@ -25,18 +26,27 @@ from backend.api.models import (
     StartRunRequest,
 )
 from backend.api.preflight import preflight
+from backend.api.routes_ask import register_ask_routes
 from backend.api.routes_integrations import register_integration_routes
+from backend.api.routes_models import register_model_routes
+from backend.api.routes_otlp import register_otlp_routes
 from backend.api.routes_setup import register_setup_routes
-from backend.api.runner import RunConflictError, start_respawn, start_run
+from backend.api.runner import (
+    RunConflictError,
+    start_answer,
+    start_followup,
+    start_respawn,
+    start_run,
+)
 from backend.api.settings import load_config, load_features
 from backend.api.stream import event_stream, parse_last_event_id
 from backend.logging import log
+from backend.model_catalog import catalog
 from backend.orchestrator.config import (
     DEFAULT_MODELS,
     KNOWN_MODELS,
     Config,
 )
-from backend.orchestrator.job import resume_job
 from backend.orchestrator.process import CommandError
 from backend.orchestrator.sbx import (
     AGENT_CLI_BUILDERS,
@@ -46,6 +56,7 @@ from backend.orchestrator.sbx import (
     sbx_tail_log,
 )
 from backend.orchestrator.state import StateStore
+from backend.orchestrator.transcript import parse_transcript
 
 # Agents sbx can create a sandbox for. Kept alongside the builder registry
 # so the UI can show which are natively supported and which need a custom
@@ -84,6 +95,10 @@ def register_routes(app: FastAPI) -> None:  # noqa: PLR0915 -- one call per rout
     register_setup_routes(app)
     # Cloning, secrets, and GitHub issue import.
     register_integration_routes(app)
+    # Quick questions across models, no repo needed.
+    register_ask_routes(app)
+    register_model_routes(app)
+    register_otlp_routes(app)
 
     @app.get("/preflight")
     def get_preflight() -> dict[str, object]:
@@ -105,7 +120,11 @@ def register_routes(app: FastAPI) -> None:  # noqa: PLR0915 -- one call per rout
                         agent_id in AGENT_CLI_BUILDERS and agent_id not in SKIP_PERMISSIONS_IGNORED
                     ),
                     "verified": agent_id in VERIFIED_AGENTS,
-                    "known_models": sorted(KNOWN_MODELS.get(agent_id, ())),
+                    "known_models": catalog(agent_id, sorted(KNOWN_MODELS.get(agent_id, ())))[
+                        "models"
+                    ],
+                    "model_source": catalog(agent_id)["source"],
+                    "models_updated_at": catalog(agent_id)["updated_at"],
                     "default_model": DEFAULT_MODELS.get(agent_id),
                     "reports_token_usage": agent_id in ("claude", "codex"),
                 }
@@ -196,20 +215,62 @@ def register_routes(app: FastAPI) -> None:  # noqa: PLR0915 -- one call per rout
         tail = sbx_tail_log(sandbox_name, AGENT_LOG_PATH, query.tail)
         return {"sandbox_name": sandbox_name, "tail": tail}
 
-    @app.post("/jobs/{sandbox_name}/answer")
+    @app.get("/jobs/{sandbox_name}/transcript")
+    def get_transcript(
+        sandbox_name: str, query: Annotated[LogQuery, Depends()]
+    ) -> dict[str, object]:
+        """A best-effort structured view of the agent's output.
+
+        Parsed from the same tail `/log` reads, so it works mid-run, not
+        just after a job finishes. Agents whose output isn't JSON (cursor,
+        opencode, copilot, a custom `command:`) yield an empty entry list --
+        the UI falls back to the raw tail for those, same as `/log`'s
+        leniency for a gone sandbox.
+        """
+        tail = sbx_tail_log(sandbox_name, AGENT_LOG_PATH, query.tail)
+        entries = parse_transcript(tail)
+        return {
+            "sandbox_name": sandbox_name,
+            "entries": [{"index": e.index, "kind": e.kind, "text": e.text} for e in entries],
+        }
+
+    @app.post("/jobs/{sandbox_name}/answer", status_code=202)
     def answer_job(sandbox_name: str, request: AnswerRequest) -> dict[str, str]:
-        """Answers an agent that stopped to ask, and resumes it.
+        """Answers an agent that stopped to ask, and returns immediately.
 
         This is pause-then-resume, not live chat: headless agent CLIs have
         no REPL to inject into, so the answer is folded into a follow-up
-        prompt and the agent is relaunched in resume mode.
+        prompt and the agent is relaunched in resume mode -- in the
+        background (see `start_answer`), since the resumed run can last as
+        long as the job's timeout. Progress arrives over the event stream.
         """
         config = _config()
         try:
-            resume_job(config, load_features(), sandbox_name, request.answer)
+            start_answer(config, load_features(), sandbox_name, request.reply)
+        except RunConflictError as exc:
+            log.warning("answer_rejected_conflict", detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except CommandError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {"status": "resumed", "sandbox_name": sandbox_name}
+        return {"status": "resuming", "sandbox_name": sandbox_name}
+
+    @app.post("/jobs/{sandbox_name}/followup", status_code=202)
+    def followup_job(sandbox_name: str, request: FollowupRequest) -> dict[str, str]:
+        """Sends a job a new instruction, and returns immediately.
+
+        For a job whose agent isn't waiting on anything -- it finished,
+        failed verification, or got stuck -- but whose sandbox is still
+        around to continue the same session.
+        """
+        config = _config()
+        try:
+            start_followup(config, load_features(), sandbox_name, request.prompt)
+        except RunConflictError as exc:
+            log.warning("followup_rejected_conflict", detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except CommandError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"status": "following_up", "sandbox_name": sandbox_name}
 
     @app.post("/jobs/{sandbox_name}/respawn", status_code=202)
     def respawn_job(sandbox_name: str) -> dict[str, str]:

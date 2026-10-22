@@ -11,13 +11,20 @@ one-for-one without a translation layer.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from backend.api.validators import DirectoryName, GitCloneUrl, LocalRepoPath
+from backend.orchestrator.agent_otel import DEFAULT_AGENT_OTEL_ENDPOINT
+from backend.orchestrator.config import validate_sandbox_limits
+from backend.orchestrator.prompt import MAX_QUESTION_OPTIONS
 
 VerifyOn = Literal["host", "sandbox"]
+
+# A base URL the sandboxed CLIs post to. Kept to plain http(s) with no
+# whitespace, since it ends up inside a TOML string and an env var.
+HttpEndpoint = Annotated[str, Field(max_length=256, pattern=r"^https?://[^\s\"\\]+$")]
 
 
 class AgentSpecIn(BaseModel):
@@ -77,16 +84,51 @@ class StartRunRequest(BaseModel):
     open_pr: bool | None = None
     max_concurrency: int | None = Field(default=None, ge=1, le=32)
 
-    # Sandbox resource limits, passed to `sbx create`. Setting these is what
-    # gives the telemetry chart a real denominator.
-    cpus: int | None = Field(default=None, ge=1, le=256)
-    memory: str | None = Field(default=None, pattern=r"^\d+[mg]$")
+    # Per-sandbox resource limits, passed to `sbx create --cpus/--memory`.
+    # Bounded by this host, so a limit sbx would refuse is a 422 rather than
+    # a job that fails at launch.
+    cpus: int | None = None
+    memory: str | None = Field(default=None, max_length=16)
+
+    @model_validator(mode="after")
+    def _check_sandbox_limits(self) -> StartRunRequest:
+        self.memory = validate_sandbox_limits(self.cpus, self.memory)
+        return self
 
 
 class AnswerRequest(BaseModel):
-    """A human's answer to an agent that stopped to ask."""
+    """A human's answer to an agent that stopped to ask.
 
-    answer: str = Field(min_length=1, max_length=4000)
+    Either free text, or the index of one of the options the agent offered
+    with its question -- resolved to that option's text server-side, so the
+    prompt the agent sees is the same either way.
+    """
+
+    answer: str | None = Field(default=None, min_length=1, max_length=4000)
+    option_index: int | None = Field(default=None, ge=0, le=MAX_QUESTION_OPTIONS - 1)
+
+    @model_validator(mode="after")
+    def _exactly_one_reply(self) -> AnswerRequest:
+        """Both would silently ignore one; neither would answer nothing."""
+        if (self.answer is None) == (self.option_index is None):
+            raise ValueError("provide exactly one of: answer, option_index")
+        return self
+
+    @property
+    def reply(self) -> str | int:
+        """The answer text, or the chosen option's index."""
+        if self.answer is not None:
+            return self.answer
+        if self.option_index is not None:
+            return self.option_index
+        # The validator rules this out; it's here so the type narrows.
+        raise ValueError("provide exactly one of: answer, option_index")
+
+
+class FollowupRequest(BaseModel):
+    """An instruction for a job whose agent isn't waiting on anything."""
+
+    prompt: str = Field(min_length=1, max_length=4000)
 
 
 class JobQuery(BaseModel):
@@ -110,6 +152,15 @@ class LogQuery(BaseModel):
     """
 
     tail: int = Field(default=200, ge=1, le=2000)
+
+
+class AgentEventsQuery(BaseModel):
+    """Query params for ``GET /jobs/{sandbox_name}/agent-events``."""
+
+    limit: int = Field(default=1000, ge=1, le=5000)
+    # Only the current turn's events -- what the job's token counts cover --
+    # rather than every turn the sandbox has run.
+    latest_turn: bool = False
 
 
 class RemoveSandboxRequest(BaseModel):
@@ -198,6 +249,8 @@ class RunConfigIn(BaseModel):
     telemetry: bool = False
     telemetry_interval_seconds: int = Field(default=5, ge=1, le=3600)
     capture_usage: bool = True
+    # Where sandboxed claude/codex send OTel events; null turns export off.
+    agent_otel_endpoint: HttpEndpoint | None = DEFAULT_AGENT_OTEL_ENDPOINT
     remove_sandbox_on_success: bool = True
     remove_sandbox_on_failure: bool = True
 
@@ -299,3 +352,29 @@ class ImportIssuesRequest(BaseModel):
     issues: list[int] = Field(min_length=1, max_length=100)
     repo: str | None = Field(default=None, max_length=256)
     agents: list[AgentSpecIn] = Field(default_factory=list, max_length=16)
+
+
+AskProvider = Literal["claude", "codex", "openrouter", "ollama"]
+
+
+class AskContenderIn(BaseModel):
+    """One model to put a quick question to, and how to reach it."""
+
+    provider: AskProvider
+    model: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:/@-]+$")
+
+
+class AskRequest(BaseModel):
+    """A quick question, asked of several models at once -- no repo involved."""
+
+    question: str = Field(min_length=1, max_length=20000)
+    contenders: list[AskContenderIn] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def _reject_blank_and_repeats(self) -> AskRequest:
+        if not self.question.strip():
+            raise ValueError("question must not be blank")
+        pairs = [(c.provider, c.model) for c in self.contenders]
+        if len(set(pairs)) != len(pairs):
+            raise ValueError("each provider/model pair may appear only once")
+        return self

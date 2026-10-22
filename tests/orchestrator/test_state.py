@@ -386,3 +386,93 @@ def test_recorded_spec_is_not_part_of_the_job_row(tmp_path: Path) -> None:
         rows = [store.get("box-1"), *store.all_jobs()]
 
     assert all("secret-value" not in str(row) for row in rows)
+
+
+def test_step_timing_and_failure_columns_are_added_to_a_legacy_database(
+    tmp_path: Path,
+) -> None:
+    """A database from before per-step timing opens, and old rows read NULL."""
+    db = tmp_path / "legacy.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE jobs ("
+        "sandbox_name TEXT PRIMARY KEY, feature_id TEXT, agent_id TEXT, branch TEXT,"
+        "status TEXT, pr_url TEXT, detail TEXT, created_at TEXT, updated_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO jobs (sandbox_name, status, created_at, updated_at)"
+        " VALUES ('old-box', 'crashed', '2026-01-01', '2026-01-01')"
+    )
+    conn.commit()
+    conn.close()
+
+    with StateStore(str(db)) as store:
+        store.upsert("new-box", feature_id="f1", agent_id="claude", status="queued", agent_s=1.5)
+        old = store.get("old-box")
+        new = store.get("new-box")
+
+    assert old is not None
+    assert new is not None
+    for column in ("launch_s", "agent_s", "verify_s", "push_s", "failure_category"):
+        assert old[column] is None
+    assert new["agent_s"] == 1.5
+
+
+@pytest.mark.parametrize(
+    ("status", "category"),
+    [
+        ("crashed", "infra"),
+        ("lost", "infra"),
+        ("stuck", "agent_stuck"),
+        ("timed_out", "timeout"),
+        ("tests_failed", "tests"),
+        ("lint_failed", "lint"),
+        ("error", "internal"),
+        ("succeeded", None),
+        ("running", None),
+        ("queued", None),
+        ("stopped", None),
+        ("awaiting_input", None),
+    ],
+)
+def test_writing_a_status_derives_its_failure_category(
+    tmp_path: Path, status: str, category: str | None
+) -> None:
+    with StateStore(str(tmp_path / "state.sqlite3")) as store:
+        store.upsert("box", feature_id="f1", agent_id="claude", status=status)
+        job = store.get("box")
+
+    assert job is not None
+    assert job["failure_category"] == category
+
+
+def test_a_new_non_failure_status_clears_the_previous_category(tmp_path: Path) -> None:
+    """A relaunched job must not keep showing why its last attempt failed."""
+    with StateStore(str(tmp_path / "state.sqlite3")) as store:
+        store.upsert("box", feature_id="f1", agent_id="claude", status="crashed")
+        store.upsert("box", status="running")
+        job = store.get("box")
+
+    assert job is not None
+    assert job["failure_category"] is None
+
+
+def test_an_explicit_failure_category_overrides_the_derived_one(tmp_path: Path) -> None:
+    with StateStore(str(tmp_path / "state.sqlite3")) as store:
+        store.upsert(
+            "box", feature_id="f1", agent_id="claude", status="lost", failure_category="cancelled"
+        )
+        job = store.get("box")
+
+    assert job is not None
+    assert job["failure_category"] == "cancelled"
+
+
+def test_upserts_that_do_not_touch_status_leave_the_category_alone(tmp_path: Path) -> None:
+    with StateStore(str(tmp_path / "state.sqlite3")) as store:
+        store.upsert("box", feature_id="f1", agent_id="claude", status="timed_out")
+        store.upsert("box", duration_seconds=12.0)
+        job = store.get("box")
+
+    assert job is not None
+    assert job["failure_category"] == "timeout"

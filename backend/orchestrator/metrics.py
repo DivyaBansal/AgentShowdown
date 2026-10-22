@@ -54,7 +54,7 @@ class Usage:
         return self.input_tokens is None and self.output_tokens is None and self.num_turns is None
 
 
-def _iter_json_objects(log_text: str) -> list[dict]:
+def iter_json_objects(log_text: str) -> list[dict]:
     """Extracts every JSON object in a log, whether JSONL or one final blob.
 
     Args:
@@ -131,7 +131,7 @@ def parse_usage(log_text: str, agent_id: str) -> Usage:
     """
     if agent_id not in USAGE_CAPABLE_AGENTS or not log_text:
         return Usage()
-    objects = _iter_json_objects(log_text)
+    objects = iter_json_objects(log_text)
     if not objects:
         return Usage()
     return Usage(

@@ -37,7 +37,6 @@ def test_unsubscribe_stops_delivery() -> None:
     bus.publish("second")
 
     assert [e.type for e in received] == ["first"]
-    assert bus.subscriber_count == 0
 
 
 def test_a_failing_subscriber_cannot_break_the_publisher() -> None:

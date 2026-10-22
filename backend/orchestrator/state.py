@@ -3,14 +3,32 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import sqlite3
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from backend.orchestrator.events import bus
 
 if TYPE_CHECKING:
     from backend.orchestrator.telemetry import Sample
+
+
+@dataclass(frozen=True)
+class AgentEventRow:
+    """One OTel event to store, already normalized by the receiver.
+
+    Attributes:
+        name: The event name, e.g. "claude_code.tool_result".
+        ts: When the CLI says it happened (ISO-8601), if it said.
+        attributes: The event's attributes as plain JSON values.
+    """
+
+    name: str
+    ts: str | None
+    attributes: dict[str, object] = field(default_factory=dict)
+
 
 # Columns `upsert` accepts as keyword arguments.
 _WRITABLE_COLUMNS: tuple[str, ...] = (
@@ -37,7 +55,45 @@ _WRITABLE_COLUMNS: tuple[str, ...] = (
     "output_tokens",
     "num_turns",
     "repo",
+    "launch_s",
+    "agent_s",
+    "verify_s",
+    "push_s",
+    "failure_category",
+    "question_options",
 )
+
+# Why a job failed, as a fixed vocabulary rather than the free-text
+# `detail`, so failures can be grouped and counted -- in particular so flaky
+# infrastructure can be told apart from an agent that did a bad job.
+# "cancelled" is never derived from a status: it's passed explicitly by the
+# paths where a person removed the sandbox on purpose.
+FailureCategory = Literal[
+    "infra", "agent_stuck", "timeout", "tests", "lint", "internal", "cancelled"
+]
+_FAILURE_CATEGORIES: dict[str, FailureCategory] = {
+    "crashed": "infra",
+    "lost": "infra",
+    "stuck": "agent_stuck",
+    "timed_out": "timeout",
+    "tests_failed": "tests",
+    "lint_failed": "lint",
+    "error": "internal",
+}
+
+
+def failure_category_for(status: str) -> FailureCategory | None:
+    """Maps a job status to its failure category.
+
+    Args:
+        status: A job status as stored in the `jobs` table.
+
+    Returns:
+        The category, or None when the status is not a failure (succeeded,
+        still in flight, or parked on purpose: stopped / awaiting_input).
+    """
+    return _FAILURE_CATEGORIES.get(status)
+
 
 # Columns added after the original langlearn schema, with the exact DDL to
 # add each one. Written out literally rather than generated, so no SQL is
@@ -61,6 +117,14 @@ _MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("num_turns", "ALTER TABLE jobs ADD COLUMN num_turns INTEGER"),
     ("repo", "ALTER TABLE jobs ADD COLUMN repo TEXT"),
     ("log_tail", "ALTER TABLE jobs ADD COLUMN log_tail TEXT"),
+    ("launch_s", "ALTER TABLE jobs ADD COLUMN launch_s REAL"),
+    ("agent_s", "ALTER TABLE jobs ADD COLUMN agent_s REAL"),
+    ("verify_s", "ALTER TABLE jobs ADD COLUMN verify_s REAL"),
+    ("push_s", "ALTER TABLE jobs ADD COLUMN push_s REAL"),
+    ("failure_category", "ALTER TABLE jobs ADD COLUMN failure_category TEXT"),
+    # JSON-encoded list of strings: the choices an awaiting_input agent
+    # offered alongside its question, if any.
+    ("question_options", "ALTER TABLE jobs ADD COLUMN question_options TEXT"),
 )
 
 # One fully static statement -- no identifier is ever interpolated into SQL.
@@ -93,10 +157,19 @@ _UPSERT_SQL = """
         output_tokens,
         num_turns,
         repo,
+        launch_s,
+        agent_s,
+        verify_s,
+        push_s,
+        failure_category,
+        question_options,
         created_at,
         updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?
+    )
     ON CONFLICT(sandbox_name) DO UPDATE SET
         feature_id = excluded.feature_id,
         agent_id = excluded.agent_id,
@@ -121,6 +194,12 @@ _UPSERT_SQL = """
         output_tokens = excluded.output_tokens,
         num_turns = excluded.num_turns,
         repo = excluded.repo,
+        launch_s = excluded.launch_s,
+        agent_s = excluded.agent_s,
+        verify_s = excluded.verify_s,
+        push_s = excluded.push_s,
+        failure_category = excluded.failure_category,
+        question_options = excluded.question_options,
         updated_at = excluded.updated_at
 """
 
@@ -192,8 +271,38 @@ class StateStore:
             )
             """
         )
+        # OTel log events exported by the agent CLIs (see agent_otel). Kept
+        # out of `jobs` for the same reason as samples: many rows per job.
+        # `received_at` is the host's clock, not the CLI's, so it orders
+        # consistently against `agent_launches`.
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sandbox_name TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                ts TEXT,
+                name TEXT NOT NULL,
+                attributes TEXT NOT NULL
+            )
+            """
+        )
+        # When each job's agent was last launched, so a resumed job's usage
+        # counts only the current turn's events -- the same scope the run
+        # log, which every launch overwrites, gives `parse_usage`.
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_launches (
+                sandbox_name TEXT PRIMARY KEY,
+                launched_at TEXT NOT NULL
+            )
+            """
+        )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_samples_sandbox ON samples (sandbox_name, ts)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_events_sandbox ON agent_events (sandbox_name, id)"
         )
         self._migrate()
         self.conn.commit()
@@ -218,7 +327,11 @@ class StateStore:
         Args:
             sandbox_name: Primary key of the job.
             **fields: Column values to set (e.g. status=, detail=). Every
-                key must be a member of `_WRITABLE_COLUMNS`.
+                key must be a member of `_WRITABLE_COLUMNS`. Writing `status`
+                also writes `failure_category` derived from it, unless the
+                caller passes one explicitly -- so every path that moves a
+                job's status keeps the category in step, including ones far
+                from the orchestrator (kill-all, restart reconciliation).
 
         Raises:
             ValueError: If a field name isn't a known writable column.
@@ -228,6 +341,8 @@ class StateStore:
             raise ValueError(
                 f"unknown job column(s): {sorted(unknown)}. Known: {sorted(_WRITABLE_COLUMNS)}"
             )
+        if "status" in fields and "failure_category" not in fields:
+            fields["failure_category"] = failure_category_for(str(fields["status"]))
         now = dt.datetime.now(dt.UTC).isoformat()
         # `with self.conn` wraps the read and the write in one transaction, so
         # a concurrent writer can't slip between them and lose an update.
@@ -370,6 +485,72 @@ class StateStore:
         ).fetchall()
         cols = ("sandbox_name", "ts", "cpu_cores", "mem_bytes", "mem_limit_bytes", "pids")
         return [dict(zip(cols, row, strict=True)) for row in reversed(rows)]
+
+    def add_agent_events(self, sandbox_name: str, events: list[AgentEventRow]) -> None:
+        """Records a batch of OTel events exported by a job's agent.
+
+        Committed before returning, so by the time the receiver answers the
+        exporter, the batch is readable -- which is what lets "the agent
+        process exited" stand in for "its telemetry has arrived".
+
+        Args:
+            sandbox_name: The job the events belong to.
+            events: The batch, in the order the exporter sent it.
+        """
+        received_at = dt.datetime.now(dt.UTC).isoformat()
+        with self.conn:
+            self.conn.executemany(
+                "INSERT INTO agent_events (sandbox_name, received_at, ts, name, attributes) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (sandbox_name, received_at, e.ts, e.name, json.dumps(e.attributes))
+                    for e in events
+                ],
+            )
+
+    def get_agent_events(
+        self, sandbox_name: str, *, since: str | None = None, limit: int = 5000
+    ) -> list[dict]:
+        """Returns a job's OTel events, oldest first.
+
+        Args:
+            sandbox_name: The job to read.
+            since: Only events received at or after this ISO-8601 UTC time.
+            limit: Most recent N events to return.
+
+        Returns:
+            Rows with "received_at", "ts", "name" and decoded "attributes".
+        """
+        rows = self.conn.execute(
+            "SELECT received_at, ts, name, attributes FROM agent_events "
+            "WHERE sandbox_name = ? AND received_at >= ? ORDER BY id DESC LIMIT ?",
+            (sandbox_name, since or "", limit),
+        ).fetchall()
+        return [
+            {"received_at": r[0], "ts": r[1], "name": r[2], "attributes": json.loads(r[3])}
+            for r in reversed(rows)
+        ]
+
+    def set_agent_launched_at(self, sandbox_name: str, launched_at: str) -> None:
+        """Records when a job's agent was (re)launched.
+
+        Args:
+            sandbox_name: The job.
+            launched_at: ISO-8601 UTC time, taken just before the launch.
+        """
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO agent_launches (sandbox_name, launched_at) VALUES (?, ?) "
+                "ON CONFLICT(sandbox_name) DO UPDATE SET launched_at = excluded.launched_at",
+                (sandbox_name, launched_at),
+            )
+
+    def get_agent_launched_at(self, sandbox_name: str) -> str | None:
+        """Returns the time recorded by `set_agent_launched_at`, or None."""
+        row = self.conn.execute(
+            "SELECT launched_at FROM agent_launches WHERE sandbox_name = ?", (sandbox_name,)
+        ).fetchone()
+        return row[0] if row else None
 
     def close(self) -> None:
         """Closes the underlying connection.

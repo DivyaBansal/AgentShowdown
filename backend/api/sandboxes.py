@@ -141,6 +141,7 @@ def remove(
                 sandbox_name,
                 status="lost",
                 detail="sandbox removed from the UI",
+                failure_category="cancelled",
             )
     if force:
         log.warning("sandbox_delete_forced", sandbox=sandbox_name)
@@ -174,6 +175,7 @@ def kill_all(state_db_path: str) -> dict[str, object]:
                     job["sandbox_name"],
                     status="lost",
                     detail="sandbox removed by kill-all",
+                    failure_category="cancelled",
                 )
                 marked += 1
     return {"removed": doomed, "jobs_marked_lost": marked}

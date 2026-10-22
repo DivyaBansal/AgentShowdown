@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from backend.orchestrator.config import Feature
 
+# How many answer options an awaiting_input agent may offer. Stated in the
+# prompt and enforced again when the status file is read (job.py), since an
+# agent may not follow the instruction.
+MAX_QUESTION_OPTIONS = 6
+
 
 def build_prompt(feature: Feature, branch: str, status_file: str) -> str:
     """Builds the initial prompt for a fresh agent run.
@@ -42,9 +47,12 @@ Instructions:
      make (an ambiguous requirement, a missing credential, a genuine
      design choice) -- NOT for problems you could resolve yourself by
      reading more code or trying another approach. Set "message" to the
-     exact question. Then stop working immediately; do not guess and
-     continue. You will be given the human's answer in a follow-up turn
-     and should continue from there.
+     exact question. If the question has a small set of discrete answers,
+     also include them as "options": a list of short strings (at most
+     {MAX_QUESTION_OPTIONS}), e.g. "options": ["Keep the old API", "Break it"].
+     Then stop working immediately; do not guess and continue. You will be
+     given the human's answer in a follow-up turn and should continue from
+     there.
    - "stuck": you cannot complete the feature and further attempts won't
      help (a hard blocker, contradictory requirements, etc). Set
      "message" to why. Commit whatever partial progress you made first,
@@ -76,6 +84,33 @@ def build_continue_prompt(status_file: str) -> str:
 When you are next completely finished (or if you become permanently stuck),
 update "{status_file}" following the same status-file contract as before
 (overwrite it with a fresh {{"state": ..., "message": ...}} JSON object).
+"""
+
+
+def build_followup_prompt(instruction: str, status_file: str) -> str:
+    """Builds the prompt for a follow-up a human sent to a job unprompted.
+
+    Distinct from `build_resume_prompt`: the agent didn't ask anything, so
+    telling it "a human answered your question" would be false and could
+    send it looking for a question it never asked.
+
+    Args:
+        instruction: What the human wants done next.
+        status_file: Workspace-relative path the agent must write its
+            status JSON to.
+
+    Returns:
+        The prompt string, to be passed alongside --continue/--resume.
+    """
+    return f"""A human has a follow-up instruction for the work you did on this feature:
+
+{instruction}
+
+Carry it out on the same branch, committing as you go. When you are next
+completely finished (or if you become permanently stuck, or need to ask
+something), update "{status_file}" following the same status-file contract
+as before (overwrite it with a fresh {{"state": ..., "message": ...}} JSON
+object).
 """
 
 

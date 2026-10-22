@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import shlex
+import signal
 import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -65,6 +67,7 @@ class RunOptions:
         timeout: Seconds to wait before killing the child. None waits
             forever -- only safe for commands whose caller already bounds
             them another way (e.g. the orchestrator's own poll loop).
+        cwd: Working directory for the child. None inherits this process's.
     """
 
     check: bool = True
@@ -72,11 +75,39 @@ class RunOptions:
     env: Mapping[str, str] | None = None
     redact: Sequence[str] = ()
     timeout: float | None = None
+    cwd: str | None = None
 
 
 # Frozen, so one shared instance is safe as a default argument -- and naming
 # it keeps `run`'s signature free of a call expression (ruff B008).
 DEFAULT_RUN_OPTIONS = RunOptions()
+
+
+def run_bounded(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
+    """Runs discovery in a separate session, killing its entire process tree on timeout."""
+    log.info("model_discovery_command", executable=cmd[0], timeout_seconds=timeout)
+    with subprocess.Popen(  # noqa: S603 -- fixed listing argv, never a shell
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            # Descendants can inherit the pipes; kill the session's process group,
+            # not just the CLI parent, before draining and reaping it.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise CommandTimeout("Model discovery exceeded its deadline") from exc
+        if process.returncode:
+            raise CommandError("Model discovery command failed")
+        return subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
 
 
 def run(
@@ -121,6 +152,7 @@ def run(
             check=False,
             env=dict(options.env) if options.env is not None else None,
             timeout=options.timeout,
+            cwd=options.cwd,
             stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:

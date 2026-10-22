@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from backend.orchestrator.config import Feature
-from backend.orchestrator.prompt import build_continue_prompt, build_prompt, build_resume_prompt
+from backend.orchestrator.prompt import (
+    MAX_QUESTION_OPTIONS,
+    build_continue_prompt,
+    build_followup_prompt,
+    build_prompt,
+    build_resume_prompt,
+)
 
 
 def test_build_prompt_includes_branch_and_status_file() -> None:
@@ -42,4 +48,22 @@ def test_build_continue_prompt_includes_status_file_and_no_human_framing() -> No
     assert "continue" in prompt.lower()
     # Unlike build_resume_prompt, there's no answer to relay.
     assert "human" not in prompt.lower()
+    assert "answered" not in prompt.lower()
+
+
+def test_build_prompt_tells_the_agent_it_may_offer_answer_options() -> None:
+    feature = Feature(id="f1", description="Do the thing", acceptance_criteria=[], agents=[])
+
+    prompt = build_prompt(feature, "agent/f1/claude", ".agent_status.json")
+
+    assert '"options"' in prompt
+    assert f"at most\n     {MAX_QUESTION_OPTIONS})" in prompt
+
+
+def test_build_followup_prompt_relays_the_instruction_without_claiming_a_question() -> None:
+    prompt = build_followup_prompt("also add a changelog entry", ".agent_status.json")
+
+    assert "also add a changelog entry" in prompt
+    assert ".agent_status.json" in prompt
+    # The agent asked nothing; saying "answered your question" would be false.
     assert "answered" not in prompt.lower()
