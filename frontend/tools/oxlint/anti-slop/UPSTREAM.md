@@ -12,10 +12,10 @@ at `.agents/skills/install-anti-slop`.
   not registered — the frontend has no direct `effect` dependency.
 - Runtime: `oxlint` and `@oxlint/plugins` pinned together at `1.88.0`; upgrade them in
   lockstep.
-- Configuration: `frontend/.oxlintrc.json`, run by `npm run lint` after ESLint.
+- Configuration: `frontend/.oxlintrc.json`, run by `npm run lint`.
 
 ## Intentional deviations
 
 - Installed under `frontend/tools/oxlint/anti-slop/` instead of the repo root, because
   `frontend/` is the only JS/TS package and owns the Oxlint dependencies.
-- Oxlint runs alongside ESLint rather than replacing it.
+- Oxlint replaces ESLint: `.oxlintrc.json` also ports the ESLint, typescript-eslint, and React Hooks recommended rules.

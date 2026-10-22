@@ -37,7 +37,7 @@ that violates it, so following it up front saves round trips.
 
 ## Frontend-specific (`frontend/`)
 
-- No `any` in TypeScript — ESLint's `@typescript-eslint/no-explicit-any`
+- No `any` in TypeScript — Oxlint's `typescript/no-explicit-any`
   is a hard error, not a warning. If you don't know the type, define an
   interface or use `unknown` and narrow it.
 - The API client (`frontend/src/api.ts`) is the *only* place `fetch`
