@@ -113,17 +113,20 @@ features:
 
 ## Platform and sizing
 
-AgentShowdown runs on **Linux**. It has only been tested on this machine:
+AgentShowdown runs on **Linux** (tested on Ubuntu 24.04 with `sbx` v0.48.0 and
+Docker 29.8).
 
-| | |
-|---|---|
-| OS | Ubuntu 24.04.5 LTS, kernel 6.8 |
-| CPU | AMD EPYC 9354P, 32 cores / 64 threads |
-| RAM | 188 GiB |
-| Sandbox runtime | `sbx` v0.48.0, Docker 29.8 |
+**A laptop with 16 GB of RAM is enough to run 3 sandboxes in parallel** (the
+default `max_concurrency`), as long as you:
 
-Each sandbox is a small VM. Measured on that machine (resident memory of the
-sandbox's VM process on the host):
+- cap each sandbox's memory, e.g. `--memory 3g` (or *Memory per sandbox* = `3g`
+  in the web UI). Otherwise sbx lets each one grow to half your RAM, and three
+  of them can overcommit a 16 GB machine.
+- use hosted models (API keys). A local Ollama model on the same laptop
+  competes for that RAM; leave room for it or lower the concurrency.
+
+Each sandbox is a small VM. Measured resident memory of the sandbox's VM
+process on the host:
 
 | Sandbox state | Host memory |
 |---|---|
@@ -253,7 +256,7 @@ token counts come from the run log.
 ## Acknowledgements
 
 - [Docker Sandboxes (`sbx`)](https://docs.docker.com/ai/sandboxes/) runs every
-  agent in its own VM.
+  agent in its own microVM.
 - [archify](https://github.com/tt-a1i/archify) generated the architecture diagram.
 
 ## Contributing
