@@ -1,0 +1,121 @@
+/* Ask: one question, several models, answers side by side. */
+
+.ask-view {
+  display: grid;
+  gap: var(--space-5);
+  padding: var(--space-5) 0;
+}
+
+.ask-form,
+.ask-result,
+.ask-history {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.ask-form h2,
+.ask-result h2,
+.ask-history h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.ask-result__question {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-left: var(--rail) solid var(--accent);
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Columns as wide as there is room for, stacking to one on a phone. */
+.answer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.answer-card {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+
+.answer-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.answer-card__title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.answer-card__title h3 {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.answer-card__model {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.answer-card__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.answer-card__stats dt {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+.answer-card__stats dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.answer-card__text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.ask-history ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.ask-history button {
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+}
+
+.ask-history button[aria-current="true"] {
+  color: var(--accent-ink);
+  background: var(--accent-wash);
+}
