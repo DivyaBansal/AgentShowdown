@@ -35,6 +35,25 @@
   font-weight: 600;
 }
 
-.timeline__tools td {
+/* Numeric columns: right-align headers with their values. */
+.timeline__tools td,
+.timeline__tools thead th:not(:first-child) {
   text-align: right;
+}
+
+/* Long runs scroll inside their own box instead of stretching the page. */
+.timeline__scroll {
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.timeline__scroll--tools {
+  max-height: 240px;
+}
+
+/* Keep the column names in view while the tool table scrolls. */
+.timeline__tools thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
 }

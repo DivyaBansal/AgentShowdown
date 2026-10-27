@@ -100,6 +100,19 @@ describe("AgentTimeline", () => {
     ]);
   });
 
+  it("puts long steps and tool totals in keyboard-scrollable regions", async () => {
+    stubFetch(EVENTS);
+    render(<AgentTimeline sandboxName="box-1" live={false} />);
+
+    const history = await screen.findByRole("region", { name: /step history/i });
+    expect(within(history).getByRole("list", { name: /agent steps/i })).toBeInTheDocument();
+    expect(history).toHaveAttribute("tabindex", "0");
+
+    const totals = screen.getByRole("region", { name: /tool totals/i });
+    expect(within(totals).getByRole("table", { name: /tool calls by tool/i })).toBeInTheDocument();
+    expect(totals).toHaveAttribute("tabindex", "0");
+  });
+
   it("shows model requests and prompts under Everything", async () => {
     stubFetch(EVENTS);
     render(<AgentTimeline sandboxName="box-1" live={false} />);

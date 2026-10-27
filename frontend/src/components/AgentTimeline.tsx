@@ -56,28 +56,31 @@ function ToolTable({ tools }: { tools: AgentEvents["summary"]["tools"] }) {
 
   if (rows.length === 0) return null;
 
+  // Focusable so keyboard users can scroll a long table.
   return (
-    <table className="timeline__tools">
-      <caption className="visually-hidden">Tool calls by tool</caption>
-      <thead>
-        <tr>
-          <th scope="col">Tool</th>
-          <th scope="col">Calls</th>
-          <th scope="col">Failed</th>
-          <th scope="col">Time</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map(([tool, rollup]) => (
-          <tr key={tool}>
-            <th scope="row" className="mono">{tool}</th>
-            <td className="num">{rollup.calls}</td>
-            <td className="num">{rollup.failures}</td>
-            <td className="num">{formatDuration(rollup.duration_ms)}</td>
+    <div className="timeline__scroll timeline__scroll--tools" role="region" aria-label="Tool totals" tabIndex={0}>
+      <table className="timeline__tools">
+        <caption className="visually-hidden">Tool calls by tool</caption>
+        <thead>
+          <tr>
+            <th scope="col">Tool</th>
+            <th scope="col">Calls</th>
+            <th scope="col">Failed</th>
+            <th scope="col">Time</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map(([tool, rollup]) => (
+            <tr key={tool}>
+              <th scope="row" className="mono">{tool}</th>
+              <td className="num">{rollup.calls}</td>
+              <td className="num">{rollup.failures}</td>
+              <td className="num">{formatDuration(rollup.duration_ms)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -161,21 +164,23 @@ export function AgentTimeline({ sandboxName, live }: { sandboxName: string; live
           {shown.length === 0 ? (
             <p className="hint">No tool calls yet.</p>
           ) : (
-            <ol className="list timeline" aria-label="Agent steps">
-              {shown.map((entry) => (
-                <li key={entry.seq}>
-                  <span className="num timeline__at">{offset(entry.at, start)}</span>
-                  <StatusChip tone={toneFor(entry)}>
-                    {entry.title}
-                    {entry.ok === false && <span className="visually-hidden"> (failed)</span>}
-                  </StatusChip>
-                  <span className={`list__main${entry.kind === "tool" ? " mono" : ""}`}>
-                    {entry.detail ?? ""}
-                  </span>
-                  <span className="num hint">{formatDuration(entry.duration_ms)}</span>
-                </li>
-              ))}
-            </ol>
+            <div className="timeline__scroll" role="region" aria-label="Step history" tabIndex={0}>
+              <ol className="list timeline" aria-label="Agent steps">
+                {shown.map((entry) => (
+                  <li key={entry.seq}>
+                    <span className="num timeline__at">{offset(entry.at, start)}</span>
+                    <StatusChip tone={toneFor(entry)}>
+                      {entry.title}
+                      {entry.ok === false && <span className="visually-hidden"> (failed)</span>}
+                    </StatusChip>
+                    <span className={`list__main${entry.kind === "tool" ? " mono" : ""}`}>
+                      {entry.detail ?? ""}
+                    </span>
+                    <span className="num hint">{formatDuration(entry.duration_ms)}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
           )}
         </>
       )}
