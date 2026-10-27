@@ -29,6 +29,8 @@ from backend.api.settings import (
 )
 from backend.api.workspace import (
     active_workspace,
+    clear_selection,
+    forget,
     inspect,
     load_registry,
     select,
@@ -227,6 +229,25 @@ def register_workspace_routes(app: FastAPI) -> None:
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return entry.model_dump()
+
+    @app.delete("/workspaces/active")
+    def clear_active_workspace() -> dict[str, object]:
+        """Deselects the active repo without forgetting it.
+
+        Takes no input. The repo stays in the known list, so switching back
+        is one click.
+        """
+        return {"active": None, "previous": clear_selection()}
+
+    @app.post("/workspaces/forget")
+    def forget_workspace(request: WorkspacePathRequest) -> dict[str, object]:
+        """Drops a repo from the known list, leaving its files on disk.
+
+        Forgetting the active repo also deselects it.
+        """
+        if not forget(Path(request.path)):
+            raise HTTPException(status_code=404, detail=f"Not a known repository: {request.path}")
+        return {"forgotten": request.path}
 
 
 def register_config_routes(app: FastAPI) -> None:

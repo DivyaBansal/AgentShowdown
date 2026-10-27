@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -74,6 +75,83 @@ def test_select_then_features_follow_the_workspace(tmp_path: Path) -> None:
     ids = [f["id"] for f in client.get("/features").json()["features"]]
 
     assert ids == ["from-workspace"]
+
+
+def test_clearing_the_active_workspace_keeps_it_known(tmp_path: Path) -> None:
+    """Deselecting must not forget the repo, so switching back is one click."""
+    repo = _git_repo(tmp_path / "app")
+    client.post("/workspaces/select", json={"path": str(repo)})
+
+    response = client.delete("/workspaces/active")
+    listing = client.get("/workspaces").json()
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["previous"] == str(repo.resolve())
+    assert listing["active"] is None
+    assert [w["path"] for w in listing["workspaces"]] == [str(repo.resolve())]
+
+
+def test_clearing_with_nothing_selected_is_harmless() -> None:
+    response = client.delete("/workspaces/active")
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["previous"] is None
+
+
+def test_clearing_the_workspace_only_accepts_delete() -> None:
+    response = client.post("/workspaces/active", json={"path": "/tmp"})
+
+    assert response.status_code == HTTPStatus.METHOD_NOT_ALLOWED
+
+
+def test_forgetting_a_workspace_drops_it_but_keeps_its_files(tmp_path: Path) -> None:
+    keep = _git_repo(tmp_path / "keep")
+    drop = _git_repo(tmp_path / "drop")
+    client.post("/workspaces/select", json={"path": str(drop)})
+    client.post("/workspaces/select", json={"path": str(keep)})
+
+    response = client.post("/workspaces/forget", json={"path": str(drop.resolve())})
+    listing = client.get("/workspaces").json()
+
+    assert response.status_code == HTTPStatus.OK
+    assert [w["path"] for w in listing["workspaces"]] == [str(keep.resolve())]
+    assert listing["active"] == str(keep.resolve())
+    assert (drop / ".git").is_dir()
+
+
+def test_forgetting_the_active_workspace_deselects_it(tmp_path: Path) -> None:
+    """The registry must never point at a repo it no longer lists."""
+    repo = _git_repo(tmp_path / "app")
+    client.post("/workspaces/select", json={"path": str(repo)})
+
+    client.post("/workspaces/forget", json={"path": str(repo)})
+    listing = client.get("/workspaces").json()
+
+    assert listing == {"active": None, "workspaces": []}
+
+
+def test_forgetting_a_deleted_directory_still_works(tmp_path: Path) -> None:
+    """A repo removed from disk is exactly the one you'd want to forget."""
+    repo = _git_repo(tmp_path / "gone")
+    client.post("/workspaces/select", json={"path": str(repo)})
+    shutil.rmtree(repo)
+
+    response = client.post("/workspaces/forget", json={"path": str(repo.resolve())})
+
+    assert response.status_code == HTTPStatus.OK
+    assert client.get("/workspaces").json()["workspaces"] == []
+
+
+def test_forgetting_an_unknown_workspace_is_a_404(tmp_path: Path) -> None:
+    response = client.post("/workspaces/forget", json={"path": str(tmp_path)})
+
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+def test_forget_rejects_a_dangerous_path() -> None:
+    response = client.post("/workspaces/forget", json={"path": "/proc/self"})
+
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 # --- config -----------------------------------------------------------------

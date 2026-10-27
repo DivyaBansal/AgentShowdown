@@ -11,9 +11,11 @@
 import { useEffect, useState } from "react";
 import {
   ApiError,
+  clearWorkspace,
   cloneRepo,
   fetchCloneStatus,
   fetchWorkspaces,
+  forgetWorkspace,
   inspectWorkspace,
   selectWorkspace,
   type WorkspaceInfo,
@@ -125,6 +127,34 @@ export function WorkspacePicker({ onChanged }: { onChanged: () => void }) {
     }
   }
 
+  async function handleClear() {
+    setError(null);
+
+    try {
+      await clearWorkspace();
+      setStatus("No repository selected");
+      reload();
+      onChanged();
+    } catch (err) {
+      fail(err, "Could not clear the selection");
+    }
+  }
+
+  async function handleForget(target: string) {
+    setError(null);
+
+    try {
+      await forgetWorkspace(target);
+      setStatus(`Forgot ${target}. Its files are untouched.`);
+      reload();
+
+      // Forgetting the active repo deselects it, which the parent must see.
+      if (target === known.active) onChanged();
+    } catch (err) {
+      fail(err, "Could not forget that repository");
+    }
+  }
+
   return (
     <>
       <form className="controls" onSubmit={handleInspect}>
@@ -229,12 +259,25 @@ export function WorkspacePicker({ onChanged }: { onChanged: () => void }) {
               <li key={w.path}>
                 <span className="list__main mono">{w.path}</span>
                 {w.path === known.active ? (
-                  <StatusChip tone="ok">in use</StatusChip>
+                  <>
+                    <StatusChip tone="ok">in use</StatusChip>
+                    <button type="button" onClick={() => void handleClear()}>
+                      Clear selection
+                    </button>
+                  </>
                 ) : (
                   <button type="button" onClick={() => void handleUse(w.path)}>
                     Switch
                   </button>
                 )}
+                <button
+                  type="button"
+                  aria-label={`Forget ${w.path}`}
+                  title="Remove from this list. Files on disk are left alone."
+                  onClick={() => void handleForget(w.path)}
+                >
+                  Forget
+                </button>
               </li>
             ))}
           </ul>

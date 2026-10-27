@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorkspaceList } from "../api";
 import { type Json } from "../test/fetch";
 import { WorkspacePicker } from "./WorkspacePicker";
 
@@ -146,6 +147,92 @@ describe("WorkspacePicker", () => {
 
     expect(await screen.findByText("/repos/two")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /switch/i })).toHaveLength(1);
+  });
+
+  it("clears the active repo and tells its parent", async () => {
+    const known: WorkspaceList = {
+      active: "/repos/one",
+      workspaces: [{ path: "/repos/one", origin_url: null, github_repo: null, cloned: false }],
+    };
+
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/workspaces/active" && init?.method === "DELETE") {
+        known.active = null;
+
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ active: null, previous: "/repos/one" }),
+        });
+      }
+
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ ...known }) });
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    const onChanged = vi.fn();
+    render(<WorkspacePicker onChanged={onChanged} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /clear selection/i }));
+
+    expect(await screen.findByText(/no repository selected/i)).toBeInTheDocument();
+    expect(onChanged).toHaveBeenCalled();
+    // Still known, now offered as a switch target rather than "in use".
+    expect(await screen.findByRole("button", { name: /switch/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /clear selection/i })).not.toBeInTheDocument();
+  });
+
+  it("forgets a known repo and drops it from the list", async () => {
+    const known: WorkspaceList = {
+      active: "/repos/one",
+      workspaces: [
+        { path: "/repos/one", origin_url: null, github_repo: null, cloned: false },
+        { path: "/repos/two", origin_url: null, github_repo: null, cloned: false },
+      ],
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/workspaces/forget" && init?.method === "POST") {
+          // SAFETY: forgetWorkspace always sends a JSON body of `{ path }`.
+          const { path } = JSON.parse(String(init.body)) as { path: string };
+          known.workspaces = known.workspaces.filter((w) => w.path !== path);
+
+          return Promise.resolve({ ok: true, status: 200, json: async () => ({ forgotten: path }) });
+        }
+
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ...known }) });
+      }),
+    );
+    const onChanged = vi.fn();
+    render(<WorkspacePicker onChanged={onChanged} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Forget /repos/two" }));
+
+    expect(await screen.findByText(/forgot \/repos\/two/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("/repos/two")).not.toBeInTheDocument());
+    expect(screen.getByText("/repos/one")).toBeInTheDocument();
+    // Not the active repo, so the parent's view of the selection is unchanged.
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("tells its parent when forgetting the active repo", async () => {
+    stub({
+      "/api/workspaces/forget": { body: { forgotten: "/repos/one" } },
+      "/api/workspaces": {
+        body: {
+          active: "/repos/one",
+          workspaces: [{ path: "/repos/one", origin_url: null, github_repo: null, cloned: false }],
+        },
+      },
+    });
+    const onChanged = vi.fn();
+    render(<WorkspacePicker onChanged={onChanged} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Forget /repos/one" }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 });
 

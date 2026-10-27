@@ -254,3 +254,43 @@ def select(path: Path) -> WorkspaceEntry:
     entry = register(info, select=True)
     log.info("workspace_selected", path=info.path, is_git_repo=info.is_git_repo)
     return entry
+
+
+def clear_selection() -> str | None:
+    """Unsets the active workspace, keeping every known one registered.
+
+    Returns:
+        The path that was active, or None if nothing was selected.
+    """
+    registry = load_registry()
+    previous = registry.active
+    registry.active = None
+    save_registry(registry)
+    log.info("workspace_selection_cleared", previous=previous)
+    return previous
+
+
+def forget(path: Path) -> bool:
+    """Removes a workspace from the registry. Never touches the directory.
+
+    Forgetting the active workspace also clears the selection, so the
+    registry never points at a repo it no longer lists.
+
+    Args:
+        path: Repository to forget, as listed or as any path resolving to it.
+
+    Returns:
+        True if it was known and is now gone, False if it was never listed.
+    """
+    registry = load_registry()
+    candidates = {str(path), str(path.expanduser().resolve())}
+    remaining = [w for w in registry.workspaces if w.path not in candidates]
+    if len(remaining) == len(registry.workspaces):
+        return False
+    was_active = registry.active in candidates
+    registry.workspaces = remaining
+    if was_active:
+        registry.active = None
+    save_registry(registry)
+    log.info("workspace_forgotten", path=str(path), was_active=was_active)
+    return True
