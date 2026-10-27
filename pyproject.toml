@@ -70,14 +70,16 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 # argument count and branch count on functions carried over verbatim:
 #   sbx.py     -- four functions taking 6-8 config/override arguments
 #   vcs.py     -- open_pr(repo, github_repo, branch, base, title, body)
-#   job.py     -- _finalize_success(...) and run_job's reattach state machine
+#   job/finish.py    -- _finalize_success(...) and await_and_finalize(...)
+#   job/lifecycle.py -- run_job's reattach state machine, relaunch_and_await(...)
 # Positional-argument count (PLR0917) was fixed properly by making the tails
 # keyword-only. What remains is total argument count and branch count, where
 # the honest options were a params-object refactor of faithfully-ported code
-# or this ignore. Scoped to these three files so new code stays strict.
+# or this ignore. Scoped to these files so new code stays strict.
 "backend/orchestrator/sbx.py" = ["PLR0913"]
 "backend/orchestrator/vcs.py" = ["PLR0913"]
-"backend/orchestrator/job.py" = ["PLR0913", "PLR0912"]
+"backend/orchestrator/job/finish.py" = ["PLR0913"]
+"backend/orchestrator/job/lifecycle.py" = ["PLR0913", "PLR0912"]
 
 # ---- ty: fast type checking (Astral), source of truth in CI ----
 # ty checks unannotated function bodies too (unlike mypy's default), so

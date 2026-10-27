@@ -12,10 +12,11 @@ import subprocess
 from typing import TYPE_CHECKING
 
 import pytest
-from backend.orchestrator import job as job_module
 from backend.orchestrator import sbx as sbx_module
 from backend.orchestrator import vcs as vcs_module
 from backend.orchestrator.config import AgentSpec, Config, Feature
+from backend.orchestrator.job import finish as finish_module
+from backend.orchestrator.job import lifecycle as lifecycle_module
 from backend.orchestrator.state import AgentEventRow, StateStore
 
 if TYPE_CHECKING:
@@ -123,13 +124,13 @@ def sandbox(monkeypatch: pytest.MonkeyPatch) -> FakeSandbox:
     fake = FakeSandbox()
     monkeypatch.setattr(sbx_module, "run", fake.run)
     monkeypatch.setattr(vcs_module, "run", lambda cmd, **kw: _ok("1\t1\ta.py\n"))
-    monkeypatch.setattr(job_module, "_AGENT_EXIT_POLL_SECONDS", 0)
+    monkeypatch.setattr(finish_module, "_AGENT_EXIT_POLL_SECONDS", 0)
     return fake
 
 
 def _run(config: Config, agent_id: str = "claude", command: str | None = None) -> dict:
     feature = Feature(id="f1", description="d", acceptance_criteria=[], agents=[])
-    job_module.run_job(config, feature, AgentSpec(agent_id=agent_id, command=command))
+    lifecycle_module.run_job(config, feature, AgentSpec(agent_id=agent_id, command=command))
     with StateStore(config.state_db_path) as store:
         row = store.get(SANDBOX if agent_id == "claude" else f"arena-f1-{agent_id}")
     assert row is not None
@@ -201,8 +202,8 @@ def test_an_agent_that_never_exits_holds_teardown_only_until_the_timeout(
     tmp_path: Path, sandbox: FakeSandbox, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sandbox.exits_after = None
-    monkeypatch.setattr(job_module, "AGENT_EXIT_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(job_module, "_AGENT_EXIT_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(finish_module, "AGENT_EXIT_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(finish_module, "_AGENT_EXIT_POLL_SECONDS", 0.01)
 
     row = _run(_config(tmp_path))
 

@@ -105,8 +105,8 @@ Subsystem: `backend.orchestrator.events` — in-process `EventBus` pub/sub and r
 | `test_last_event_id_tracks_the_newest_event` | `bus.last_event_id` updates as events are published |
 | `test_publishing_from_many_threads_assigns_unique_ids` | Concurrent publishes from 8 threads (160 total) all get unique ids |
 
-### tests/orchestrator/test_job.py
-Subsystem: `backend.orchestrator.job` — per-job lifecycle: naming, expanding features into jobs, polling, finalizing success, `run_job`/`resume_job`/`run_job_safe`/`run_all`, host-vs-container path handling.
+### tests/orchestrator/test_job_expand.py
+Subsystem: `backend.orchestrator.job.expand` — sandbox/branch naming, expanding features into jobs, recovering a job's spec, recording queued rows.
 
 | Test | What it verifies |
 |---|---|
@@ -133,6 +133,12 @@ Subsystem: `backend.orchestrator.job` — per-job lifecycle: naming, expanding f
 | `test_find_spec_for_sandbox_matches_by_derived_name` | Matches a spec by recomputing its derived sandbox name |
 | `test_find_spec_for_sandbox_no_agents_key_uses_config_default` | Falls back to config-default `AgentSpec` when feature has no `agents` |
 | `test_find_spec_for_sandbox_no_match_raises` | No matching spec raises `CommandError` |
+
+### tests/orchestrator/test_job_finish.py
+Subsystem: `backend.orchestrator.job.finish` — polling to a terminal state, question options, finalizing success (verify, push, PR), host-vs-container path handling, step timing.
+
+| Test | What it verifies |
+|---|---|
 | `test_poll_until_signal_returns_done_when_status_file_says_so` | Returns `"done"`, records status/detail from status file |
 | `test_poll_until_signal_returns_awaiting_input` | Returns `"awaiting_input"`, records prompt detail |
 | `test_poll_until_signal_container_crash_with_no_status_returns_crashed` | Crashed status + no status file → `"crashed"` |
@@ -144,6 +150,16 @@ Subsystem: `backend.orchestrator.job` — per-job lifecycle: naming, expanding f
 | `test_finalize_success_verifies_on_the_host_by_default` | Default `verify_on=host` verifies on the host — one sandbox exec (teardown read) ⚠️ see overlap #3 |
 | `test_finalize_success_verify_on_sandbox_uses_the_sandbox` | `verify_on=sandbox` verifies inside the sandbox (2 sbx execs) ⚠️ see overlap #3 |
 | `test_finalize_success_test_failure_skips_push_and_removes_sandbox` | Failing host verification → `tests_failed`, push skipped, sandbox removed |
+| `test_teardown_read_survives_an_absolute_host_repo_path` | Teardown recovers run log even when `cd <host_repo_path>` fails in-container |
+| `test_verify_on_sandbox_uses_the_discovered_container_dir` | In-sandbox verification `cd`s into the container-discovered dir ⚠️ see overlap #3 |
+| `test_teardown_read_without_a_dir_marker_still_returns_the_log` | Missing directory marker still returns the run log |
+| `test_verify_on_sandbox_falls_back_to_the_default_workdir` | Empty `container_dir` → no explicit `workdir` kwarg |
+
+### tests/orchestrator/test_job_lifecycle.py
+Subsystem: `backend.orchestrator.job.lifecycle` — `run_job`'s reattach/relaunch decisions, answering, follow-ups, respawn, reattach after restart, `run_job_safe`/`run_all`, per-attempt resets.
+
+| Test | What it verifies |
+|---|---|
 | `test_run_job_skips_when_awaiting_input` | Already-`awaiting_input` job returns early without touching the sandbox |
 | `test_run_job_skips_already_succeeded` | Already-`succeeded` job returns early |
 | `test_run_job_full_success_path` | Fresh job creates sandbox, launches agent, polls to done, finalizes |
@@ -161,10 +177,6 @@ Subsystem: `backend.orchestrator.job` — per-job lifecycle: naming, expanding f
 | `test_resume_job_awaiting_input_again_does_not_finalize` | Polling back to `awaiting_input` does not finalize |
 | `test_run_job_safe_records_error_status_on_exception` | `run_job_safe` catches exceptions, records status `"error"` with message |
 | `test_run_all_respects_max_concurrency` | `run_all` never runs more than `max_workers` jobs concurrently |
-| `test_teardown_read_survives_an_absolute_host_repo_path` | Teardown recovers run log even when `cd <host_repo_path>` fails in-container |
-| `test_verify_on_sandbox_uses_the_discovered_container_dir` | In-sandbox verification `cd`s into the container-discovered dir ⚠️ see overlap #3 |
-| `test_teardown_read_without_a_dir_marker_still_returns_the_log` | Missing directory marker still returns the run log |
-| `test_verify_on_sandbox_falls_back_to_the_default_workdir` | Empty `container_dir` → no explicit `workdir` kwarg |
 
 ### tests/orchestrator/test_metrics.py
 Subsystem: `backend.orchestrator.metrics` — parsing token/turn usage from agent CLI logs and git diff numstat.
@@ -606,9 +618,9 @@ Tests: `SetupView` — Setup tab panel orchestration.
 
 1. **`EventBus.replay_since` gap/resync behavior tested twice, almost identically**, in `tests/orchestrator/test_events.py` (`test_replay_returns_only_events_after_the_last_seen_id`, `test_replay_signals_resync_when_the_gap_is_too_large`) and `tests/test_sse.py` (`test_replay_delivers_exactly_what_was_missed`, `test_a_client_gone_too_long_is_told_to_resync`). Same mechanism, different parameters only. `test_sse.py` doesn't need to re-verify `EventBus` internals since `test_events.py` covers them exhaustively (plus buffer-boundary and bounded-size cases with no SSE-side counterpart) — worth consolidating so `test_sse.py` focuses only on `stream.py`-specific behavior.
 2. **`sbx list --json` "uses the JSON form" checked at two layers** — `test_sbx.py::test_sbx_list_uses_the_host_side_json_listing` (unit, exact argv) and `test_api.py::test_sandboxes_listing_uses_the_json_form` (integration, through `/sandboxes`). Legitimate unit-vs-integration layering, not a true duplicate, but the near-identical names are worth a comment noting the API test intentionally re-verifies through the HTTP layer.
-3. **`verify_on=sandbox` exec-count checked at overlapping angles** — `test_job.py::test_finalize_success_verify_on_sandbox_uses_the_sandbox` (stubbed at the function level, count == 2) and `test_sandbox_cost.py::test_verify_on_sandbox_costs_one_extra_exec` (stubbed at the subprocess level, count == 4, includes launch+status execs). Legitimately distinct in scope but a reviewer fixing an exec-count regression needs to update both.
-4. **Duplicate helper definition within a single file**: `tests/orchestrator/test_job.py` defines `_ok_process()` twice (once near the top with no args, again later with a `stdout` parameter) — the second silently shadows the first. Not a duplicate test, but duplicate setup code worth consolidating to avoid an ordering-sensitive footgun.
-5. **Model/provider/env/kit/skip-permissions precedence unit-tested in `test_config.py`, then re-verified end-to-end in `test_job.py`** (e.g. `test_resolve_model_profile_wins_over_config_when_spec_unset` vs. `test_run_job_resolves_model_and_kit_from_agent_profile`/`test_run_job_spec_model_overrides_agent_profile`). Sound belt-and-suspenders layering (unit + wiring), not wasteful, but worth recognizing as intentional rather than accidental overlap.
+3. **`verify_on=sandbox` exec-count checked at overlapping angles** — `test_job_finish.py::test_finalize_success_verify_on_sandbox_uses_the_sandbox` (stubbed at the function level, count == 2) and `test_sandbox_cost.py::test_verify_on_sandbox_costs_one_extra_exec` (stubbed at the subprocess level, count == 4, includes launch+status execs). Legitimately distinct in scope but a reviewer fixing an exec-count regression needs to update both.
+4. ~~**Duplicate helper definition within a single file**~~ — resolved when `test_job.py` was split: each `test_job_*.py` now defines `_ok_process(stdout="")` once.
+5. **Model/provider/env/kit/skip-permissions precedence unit-tested in `test_config.py`, then re-verified end-to-end in `test_job_lifecycle.py`** (e.g. `test_resolve_model_profile_wins_over_config_when_spec_unset` vs. `test_run_job_resolves_model_and_kit_from_agent_profile`/`test_run_job_spec_model_overrides_agent_profile`). Sound belt-and-suspenders layering (unit + wiring), not wasteful, but worth recognizing as intentional rather than accidental overlap.
 
 No exact duplicate test bodies (same assertions, same inputs, same file) were found in the backend suite.
 

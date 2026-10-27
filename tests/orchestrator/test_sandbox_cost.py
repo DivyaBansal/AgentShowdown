@@ -21,10 +21,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from backend.orchestrator import job as job_module
 from backend.orchestrator import sbx as sbx_module
 from backend.orchestrator import vcs as vcs_module
 from backend.orchestrator.config import AgentSpec, Config, Feature
+from backend.orchestrator.job import lifecycle as lifecycle_module
 from backend.orchestrator.state import StateStore
 
 LS_JSON = json.dumps(
@@ -92,7 +92,7 @@ def sbx_calls(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
 def _run_one_job(config: Config) -> None:
     feature = Feature(id="f1", description="d", acceptance_criteria=[], agents=[])
-    job_module.run_job(config, feature, AgentSpec(agent_id="claude"))
+    lifecycle_module.run_job(config, feature, AgentSpec(agent_id="claude"))
 
 
 def _execs(calls: list[list[str]]) -> list[list[str]]:

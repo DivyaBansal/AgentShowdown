@@ -14,6 +14,20 @@ from backend.orchestrator.events import bus
 if TYPE_CHECKING:
     from backend.orchestrator.telemetry import Sample
 
+# Events nothing reads, skipped when reading so they can't crowd a job's
+# tool calls out of the `limit` window: codex streams every token of a
+# response as its own `*.delta` sse_event (thousands per run), and logs a
+# "metrics ... failed" error per metric for a model name with a colon in it.
+# Token counts ride on `response.completed`, which is kept.
+_AGENT_EVENTS_QUERY = """
+    SELECT received_at, ts, name, attributes FROM agent_events
+    WHERE sandbox_name = ? AND received_at >= ?
+      AND NOT (name = 'codex.sse_event'
+               AND json_extract(attributes, '$."event.kind"') LIKE '%.delta')
+      AND name NOT LIKE 'metrics % failed:%'
+    ORDER BY id DESC LIMIT ?
+"""
+
 
 @dataclass(frozen=True)
 class AgentEventRow:
@@ -381,7 +395,7 @@ class StateStore:
         everything" signal the UI uses for status transitions would turn a
         live tail into a full job-list refetch storm. A caller that wants
         subscribers notified publishes its own event instead -- see
-        `orchestrator.job.poll_until_signal`'s `job_log` event, which
+        `orchestrator.job.finish.poll_until_signal`'s `job_log` event, which
         mirrors how sample publishing works for telemetry (`add_sample`
         below doesn't publish either).
 
@@ -444,6 +458,36 @@ class StateStore:
         ).fetchall()
         cols = [d[0] for d in self.conn.execute("SELECT * FROM jobs LIMIT 0").description]
         return [dict(zip(cols, row, strict=True)) for row in rows]
+
+    def delete_run(self, run_id: str) -> list[str]:
+        """Deletes a run, its job rows, and everything recorded per job.
+
+        Samples, OTel events, specs and launch times are keyed by sandbox
+        name rather than run, so they go with the job rows: a sandbox name
+        is reused by the next run of the same feature and agent, and stale
+        rows left behind would be read as that next run's history.
+
+        Args:
+            run_id: The run to delete. Unknown ids are a silent no-op.
+
+        Returns:
+            The sandbox names whose job rows were deleted.
+        """
+        with self.conn:
+            names = [
+                row[0]
+                for row in self.conn.execute(
+                    "SELECT sandbox_name FROM jobs WHERE run_id = ?", (run_id,)
+                ).fetchall()
+            ]
+            for name in names:
+                self.conn.execute("DELETE FROM samples WHERE sandbox_name = ?", (name,))
+                self.conn.execute("DELETE FROM agent_events WHERE sandbox_name = ?", (name,))
+                self.conn.execute("DELETE FROM job_specs WHERE sandbox_name = ?", (name,))
+                self.conn.execute("DELETE FROM agent_launches WHERE sandbox_name = ?", (name,))
+            self.conn.execute("DELETE FROM jobs WHERE run_id = ?", (run_id,))
+            self.conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+        return names
 
     def add_sample(self, sample: Sample) -> None:
         """Records one resource sample for a sandbox.
@@ -519,13 +563,10 @@ class StateStore:
             limit: Most recent N events to return.
 
         Returns:
-            Rows with "received_at", "ts", "name" and decoded "attributes".
+            Rows with "received_at", "ts", "name" and decoded "attributes",
+            minus the noise `_AGENT_EVENTS_QUERY` skips.
         """
-        rows = self.conn.execute(
-            "SELECT received_at, ts, name, attributes FROM agent_events "
-            "WHERE sandbox_name = ? AND received_at >= ? ORDER BY id DESC LIMIT ?",
-            (sandbox_name, since or "", limit),
-        ).fetchall()
+        rows = self.conn.execute(_AGENT_EVENTS_QUERY, (sandbox_name, since or "", limit)).fetchall()
         return [
             {"received_at": r[0], "ts": r[1], "name": r[2], "attributes": json.loads(r[3])}
             for r in reversed(rows)

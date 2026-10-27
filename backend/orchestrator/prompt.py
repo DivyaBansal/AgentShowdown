@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from backend.orchestrator.config import Feature
 
 # How many answer options an awaiting_input agent may offer. Stated in the
-# prompt and enforced again when the status file is read (job.py), since an
+# prompt and enforced again when the status file is read (job/finish.py), since an
 # agent may not follow the instruction.
 MAX_QUESTION_OPTIONS = 6
 

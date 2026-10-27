@@ -27,8 +27,8 @@ from typing import TYPE_CHECKING
 from backend.logging import log
 from backend.orchestrator.config import AgentSpec
 from backend.orchestrator.events import bus
-from backend.orchestrator.job import (
-    expand_jobs,
+from backend.orchestrator.job.expand import expand_jobs, sandbox_name_for, spec_for_job
+from backend.orchestrator.job.lifecycle import (
     option_text_for,
     plan_followup,
     plan_respawn,
@@ -37,8 +37,6 @@ from backend.orchestrator.job import (
     relaunch_and_await,
     respawn_job,
     run_all,
-    sandbox_name_for,
-    spec_for_job,
 )
 from backend.orchestrator.process import CommandError
 from backend.orchestrator.prompt import build_followup_prompt, build_resume_prompt
@@ -404,6 +402,63 @@ def start_followup(
     prompt = build_followup_prompt(instruction, config.status_file)
     work = partial(relaunch_and_await, config, job, feature, spec, prompt, event="job_following_up")
     _dispatcher.submit(_execute_claimed, config, sandbox_name, "job_followup_failed", work)
+
+
+class UnknownRunError(CommandError):
+    """No run with the requested id exists."""
+
+
+# Statuses whose job is still being driven by a worker thread, so its rows
+# are about to be written again.
+_IN_FLIGHT = ("queued", "running")
+
+
+def delete_run(config: Config, run_id: str) -> list[str]:
+    """Deletes a finished run and every job recorded under it.
+
+    Refuses anything still live rather than deleting around it: a worker
+    still polling a job would recreate its row moments later, and a sandbox
+    still on the host would be left with no record pointing at it.
+
+    Args:
+        config: Orchestrator config.
+        run_id: The run to delete.
+
+    Returns:
+        The sandbox names whose job rows were deleted.
+
+    Raises:
+        UnknownRunError: If no run has this id.
+        CommandError: If the run, or one of its jobs, is still going, or a
+            job's sandbox still exists.
+    """
+    with StateStore(config.state_db_path) as store:
+        run = store.get_run(run_id)
+        if run is None:
+            raise UnknownRunError(f"Unknown run: {run_id}")
+        if run["status"] == "running":
+            raise CommandError(f"Run '{run_id}' is still running -- wait for it to finish.")
+        jobs = store.jobs_for_run(run_id)
+        names = [job["sandbox_name"] for job in jobs]
+        with _claims_lock:
+            claimed = [name for name in names if name in _claims]
+        busy = [job["sandbox_name"] for job in jobs if job["status"] in _IN_FLIGHT]
+        if claimed or busy:
+            raise CommandError(
+                f"'{(claimed or busy)[0]}' in run '{run_id}' is still active -- "
+                f"wait for it to finish, or stop it, before deleting the run."
+            )
+        live = sbx_list()
+        remaining = [name for name in names if name in live]
+        if remaining:
+            raise CommandError(
+                f"Sandbox '{remaining[0]}' from run '{run_id}' still exists -- "
+                f"remove it first, so it isn't left with no record."
+            )
+        deleted = store.delete_run(run_id)
+    log.warning("run_deleted", run_id=run_id, sandboxes=deleted)
+    bus.publish("run_deleted", run_id=run_id)
+    return deleted
 
 
 def _execute_claimed(

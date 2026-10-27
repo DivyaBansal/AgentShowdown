@@ -8,7 +8,8 @@ import sys
 import time
 
 from backend.orchestrator.config import Config, Feature, validate_sandbox_limits
-from backend.orchestrator.job import expand_jobs, resume_job, run_all
+from backend.orchestrator.job.expand import expand_jobs
+from backend.orchestrator.job.lifecycle import resume_job, run_all
 from backend.orchestrator.process import CommandError
 from backend.orchestrator.state import StateStore
 
