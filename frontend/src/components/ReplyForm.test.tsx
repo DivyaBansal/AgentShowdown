@@ -138,24 +138,15 @@ describe("ReplyForm answering a question", () => {
 });
 
 describe("ReplyForm following up", () => {
-  it("sends a follow-up to an idle job", async () => {
-    const fetchMock = accepted();
-    render(<ReplyForm job={job({ status: "tests_failed", detail: "1 failing" })} />);
+  // Follow-ups are commented out in ReplyForm until sandboxes outlive
+  // their jobs by default, so an idle job gets no form at all.
+  it.each(["running", "queued", "stopped", "succeeded", "tests_failed"])(
+    "renders nothing for a %s job",
+    (status) => {
+      const { container } = render(<ReplyForm job={job({ status })} />);
 
-    fireEvent.change(screen.getByLabelText(/follow-up instruction/i), {
-      target: { value: "fix the failing test" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /send follow-up/i }));
-
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/follow-up sent/i));
-    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/jobs/arena-f1-claude/followup");
-    expect(jsonBody(fetchInit(fetchMock))).toEqual({ prompt: "fix the failing test" });
-  });
-
-  it.each(["running", "queued", "stopped"])("renders nothing for a %s job", (status) => {
-    const { container } = render(<ReplyForm job={job({ status })} />);
-
-    // Nothing at all, so this is the documented container-query exception.
-    expect(container).toBeEmptyDOMElement();
-  });
+      // Nothing at all, so this is the documented container-query exception.
+      expect(container).toBeEmptyDOMElement();
+    },
+  );
 });

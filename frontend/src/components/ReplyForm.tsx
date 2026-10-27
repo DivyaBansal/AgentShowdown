@@ -1,6 +1,13 @@
 /** Talk to an agent: answer the question it stopped to ask, or send a
  *  follow-up instruction once it's idle.
  *
+ * Follow-ups are commented out for now: they need the job's sandbox to
+ * outlive the job, and by default (`remove_sandbox_on_success` /
+ * `remove_sandbox_on_failure`) it's removed the moment the job ends, so
+ * the form only ever led to a "sandbox no longer exists" error. The
+ * backend endpoint is still there; restore the commented lines below to
+ * bring the form back.
+ *
  * This is pause-then-resume, not live chat -- headless agent CLIs have no
  * REPL to type into, so a reply is relayed as the next turn's prompt. The
  * server accepts it at once and resumes the agent in the background; the
@@ -11,8 +18,10 @@
  */
 
 import { useState, type FormEvent } from "react";
-import { ApiError, answerJob, answerJobWithOption, followupJob, type Job } from "../api";
-import { canFollowUp, questionOptions } from "../lib/jobs";
+import { ApiError, answerJob, answerJobWithOption, type Job } from "../api";
+// import { followupJob } from "../api";
+// import { canFollowUp } from "../lib/jobs";
+import { questionOptions } from "../lib/jobs";
 import { Notice } from "./ui/Notice";
 
 export function ReplyForm({ job, showQuestion = true }: { job: Job; showQuestion?: boolean }) {
@@ -30,7 +39,8 @@ function ReplyFormBody({ job, showQuestion }: { job: Job; showQuestion: boolean 
 
   const answering = job.status === "awaiting_input";
 
-  if (!answering && !canFollowUp(job.status)) return null;
+  // if (!answering && !canFollowUp(job.status)) return null;
+  if (!answering) return null;
 
   const options = answering ? questionOptions(job) : [];
   const fieldId = `reply-${job.sandbox_name}`;
@@ -55,11 +65,12 @@ function ReplyFormBody({ job, showQuestion }: { job: Job; showQuestion: boolean 
 
     if (trimmed === "") return;
 
-    void send(() =>
-      answering
-        ? answerJob(job.sandbox_name, trimmed)
-        : followupJob(job.sandbox_name, trimmed),
-    );
+    void send(() => answerJob(job.sandbox_name, trimmed));
+    // void send(() =>
+    //   answering
+    //     ? answerJob(job.sandbox_name, trimmed)
+    //     : followupJob(job.sandbox_name, trimmed),
+    // );
   }
 
   if (sent) {
