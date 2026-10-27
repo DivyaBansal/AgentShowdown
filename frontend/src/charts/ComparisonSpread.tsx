@@ -7,10 +7,14 @@
  *
  * A metric the agent never reported renders as "no data", never as a
  * zero-length bar -- a false zero would make an agent look instant, or free.
+ *
+ * Only one feature is charted at a time: bars for different tasks measure
+ * different work, so putting them side by side would compare nothing.
  */
 
+import { useState } from "react";
 import type { Job } from "../api";
-import { assignSeriesColors, seriesKey } from "./palette";
+import { assignSeriesColorsFor, seriesKey } from "./palette";
 
 interface Metric {
   key: string;
@@ -50,29 +54,72 @@ const METRICS: Metric[] = [
   },
 ];
 
-const LABEL_W = 92;
-const VALUE_W = 52;
-const CHART_W = 320;
+const LABEL_W = 132;
+const VALUE_W = 56;
+const CHART_W = 360;
 const BAR_H = 18;
+
+// At 11px a character averages ~6px; past this a label would run into the
+// baseline, so it is cut with an ellipsis and the full text kept in <title>.
+const LABEL_MAX_CHARS = 20;
 
 // >= 2px of surface between adjacent bars; the gap is what separates them,
 // never a stroke drawn around the mark.
 const BAR_GAP = 10;
 const TOP_PAD = 6;
 
+interface Row {
+  id: string;
+  label: string;
+  value: number | null;
+  color: string;
+}
+
+function truncate(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+/** One bar label per job. Two runs of the same series get "#1", "#2" in
+ *  launch order, so rows never share a label. */
+function rowLabels(jobs: Job[]): Map<string, string> {
+  const bySeries = new Map<string, Job[]>();
+
+  for (const job of jobs) {
+    const list = bySeries.get(seriesKey(job)) ?? [];
+    list.push(job);
+    bySeries.set(seriesKey(job), list);
+  }
+
+  const labels = new Map<string, string>();
+
+  for (const [key, list] of bySeries) {
+    const ordered = [...list].sort((a, b) => a.created_at.localeCompare(b.created_at));
+    ordered.forEach((job, index) => {
+      labels.set(job.sandbox_name, list.length > 1 ? `${key} #${index + 1}` : key);
+    });
+  }
+
+  return labels;
+}
+
 function MetricChart({
   metric,
   jobs,
-  colors,
+  labels,
+  colorFor,
 }: {
   metric: Metric;
   jobs: Job[];
-  colors: Map<string, string>;
+  labels: Map<string, string>;
+  colorFor: (job: Job) => string;
 }) {
-  const rows = jobs.map((job) => ({
-    key: seriesKey(job),
+  // Keyed by sandbox name, never by label: two jobs of one series used to
+  // collide on the key, and React drew both rows on top of each other.
+  const rows: Row[] = jobs.map((job) => ({
+    id: job.sandbox_name,
+    label: labels.get(job.sandbox_name) ?? seriesKey(job),
     value: metric.value(job),
-    color: colors.get(seriesKey(job)) ?? "var(--de-emphasis)",
+    color: colorFor(job),
   }));
 
   const max = Math.max(...rows.map((r) => r.value ?? 0), 0);
@@ -80,7 +127,7 @@ function MetricChart({
   const height = TOP_PAD * 2 + rows.length * (BAR_H + BAR_GAP);
 
   const summary = rows
-    .map((r) => `${r.key}: ${r.value === null ? "no data" : metric.format(r.value)}`)
+    .map((r) => `${r.label}: ${r.value === null ? "no data" : metric.format(r.value)}`)
     .join("; ");
 
   return (
@@ -108,7 +155,7 @@ function MetricChart({
           const width = max > 0 && row.value !== null ? (row.value / max) * plotW : 0;
 
           return (
-            <g key={row.key}>
+            <g key={row.id}>
               <text
                 x={LABEL_W - 8}
                 y={y + BAR_H / 2}
@@ -117,7 +164,8 @@ function MetricChart({
                 fontSize="11"
                 fill="var(--text-2)"
               >
-                {row.key}
+                <title>{row.label}</title>
+                {truncate(row.label, LABEL_MAX_CHARS)}
               </text>
               {row.value === null ? (
                 <text
@@ -175,7 +223,23 @@ function roundedBar(x: number, y: number, w: number, h: number): string {
   ].join(" ");
 }
 
-export function ComparisonSpread({ jobs }: { jobs: Job[] }) {
+/** The feature to chart first: the one most recently launched, since that
+ *  is almost always the showdown being looked at. */
+function latestFeature(jobs: Job[]): string {
+  return [...jobs].sort((a, b) => b.created_at.localeCompare(a.created_at))[0]?.feature_id ?? "";
+}
+
+export function ComparisonSpread({
+  jobs,
+  colorFor,
+}: {
+  jobs: Job[];
+  /** Built from the full roster by the caller so colours match the rest of
+   *  the page; defaults to one built from `jobs`. */
+  colorFor?: (job: Job) => string;
+}) {
+  const [picked, setPicked] = useState<string | null>(null);
+
   if (jobs.length === 0) {
     return (
       <p className="hint">
@@ -184,17 +248,41 @@ export function ComparisonSpread({ jobs }: { jobs: Job[] }) {
     );
   }
 
-  const colors = assignSeriesColors(jobs);
+  const features = [...new Set(jobs.map((j) => j.feature_id))].sort((a, b) => a.localeCompare(b));
+  // A pick that has since vanished (e.g. filtered out by repo) falls back
+  // rather than rendering an empty chart.
+  const feature = picked !== null && features.includes(picked) ? picked : latestFeature(jobs);
+  const shown = jobs.filter((j) => j.feature_id === feature);
+  const color = colorFor ?? assignSeriesColorsFor(jobs);
+  const labels = rowLabels(shown);
+
+  const legend = new Map<string, string>();
+
+  for (const job of shown) legend.set(seriesKey(job), color(job));
 
   return (
-    <div>
+    <div className="stack stack--tight">
+      <div className="toolbar">
+        <label htmlFor="compare-feature">Feature</label>
+        <select
+          id="compare-feature"
+          value={feature}
+          onChange={(e) => setPicked(e.target.value)}
+        >
+          {features.map((f) => (
+            <option key={f} value={f}>
+              {f}
+            </option>
+          ))}
+        </select>
+      </div>
       {/* A legend is always present for two or more series: identity must
           never rest on colour matching alone. */}
-      {colors.size > 1 && (
+      {legend.size > 1 && (
         <ul className="legend">
-          {[...colors.entries()].map(([key, color]) => (
+          {[...legend.entries()].map(([key, swatch]) => (
             <li key={key}>
-              <span className="swatch" style={{ background: color }} aria-hidden="true" />
+              <span className="swatch" style={{ background: swatch }} aria-hidden="true" />
               {key}
             </li>
           ))}
@@ -205,8 +293,9 @@ export function ComparisonSpread({ jobs }: { jobs: Job[] }) {
           <MetricChart
             key={metric.key}
             metric={metric}
-            jobs={jobs}
-            colors={colors}
+            jobs={shown}
+            labels={labels}
+            colorFor={color}
           />
         ))}
       </div>

@@ -1,11 +1,15 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
 import { ComparisonSpread } from "./ComparisonSpread";
 import type { Job } from "../api";
 
+let seq = 0;
+
 function job(overrides: Partial<Job> = {}): Job {
+  seq += 1;
+
   return {
-    sandbox_name: "box",
+    sandbox_name: `box-${seq}`,
     feature_id: "f1",
     agent_id: "claude",
     run_label: null,
@@ -97,5 +101,73 @@ describe("ComparisonSpread", () => {
     const bars = container.querySelectorAll("path");
     expect(bars.length).toBeGreaterThan(0);
     expect(screen.getAllByText("1m 40s").length).toBeGreaterThan(0);
+  });
+
+  it("charts only the chosen feature, defaulting to the latest one", () => {
+    // Bars for different tasks measure different work.
+    render(
+      <ComparisonSpread
+        jobs={[
+          job({ feature_id: "old", agent_id: "aider", created_at: "2026-01-01" }),
+          job({ feature_id: "new", agent_id: "claude", created_at: "2026-02-01" }),
+        ]}
+      />,
+    );
+
+    const duration = () =>
+      screen.getAllByRole("img").find((c) => c.getAttribute("aria-label")?.includes("duration"));
+
+    expect(screen.getByLabelText("Feature")).toHaveValue("new");
+    expect(duration()?.getAttribute("aria-label")).toContain("claude");
+    expect(duration()?.getAttribute("aria-label")).not.toContain("aider");
+
+    fireEvent.change(screen.getByLabelText("Feature"), { target: { value: "old" } });
+
+    expect(duration()?.getAttribute("aria-label")).toContain("aider");
+    expect(duration()?.getAttribute("aria-label")).not.toContain("claude");
+  });
+
+  it("labels each bar with agent and model, or the user's run label", () => {
+    render(
+      <ComparisonSpread
+        jobs={[
+          job({ agent_id: "claude", model: "sonnet" }),
+          job({ agent_id: "codex", model: "gpt-5", run_label: "luna" }),
+        ]}
+      />,
+    );
+    const legend = screen.getByRole("list");
+
+    expect(within(legend).getByText("claude · sonnet")).toBeInTheDocument();
+    expect(within(legend).getByText("codex · luna")).toBeInTheDocument();
+  });
+
+  it("gives repeat runs of one series their own row instead of stacking them", () => {
+    // Rows used to be keyed by label, so two runs collided and drew on top
+    // of each other.
+    render(
+      <ComparisonSpread
+        jobs={[
+          job({ agent_id: "claude", created_at: "2026-01-01", duration_seconds: 10 }),
+          job({ agent_id: "claude", created_at: "2026-01-02", duration_seconds: 20 }),
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("claude #1", { selector: "text" })).toHaveLength(3);
+    expect(screen.getAllByText("claude #2", { selector: "text" })).toHaveLength(3);
+    expect(screen.getByText("10.0s")).toBeInTheDocument();
+    expect(screen.getByText("20.0s")).toBeInTheDocument();
+  });
+
+  it("shortens a long label but keeps the full text available", () => {
+    const { container } = render(
+      <ComparisonSpread jobs={[job({ agent_id: "claude", model: "claude-sonnet-4-5-20250929" })]} />,
+    );
+
+    expect(container.querySelector("title")?.textContent).toBe(
+      "claude · claude-sonnet-4-5-20250929",
+    );
+    expect(screen.getAllByText(/^claude · claude-son.*…$/).length).toBe(3);
   });
 });

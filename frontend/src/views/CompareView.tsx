@@ -133,7 +133,7 @@ export function CompareView({
           <h2>Head to head</h2>
         </div>
         <div className="surface__body">
-          <ComparisonSpread jobs={jobs} />
+          <ComparisonSpread jobs={visible} colorFor={colorFor} />
         </div>
       </section>
 
