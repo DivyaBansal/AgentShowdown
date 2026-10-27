@@ -487,6 +487,13 @@ def test_uses_custom_model_endpoint_true_for_anthropic_base_url() -> None:
     assert uses_custom_model_endpoint({"ANTHROPIC_BASE_URL": "http://host.docker.internal:11434"})
 
 
+def test_uses_custom_model_endpoint_true_for_codex_ollama_base_url() -> None:
+    """Ollama serves its own model names, so codex's must not be checked."""
+    assert uses_custom_model_endpoint(
+        {"CODEX_OSS_BASE_URL": "http://host.docker.internal:11434/v1"}
+    )
+
+
 def test_uses_custom_model_endpoint_false_for_unrelated_env() -> None:
     assert not uses_custom_model_endpoint({"ANTHROPIC_AUTH_TOKEN": "ollama"})
 

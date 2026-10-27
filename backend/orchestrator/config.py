@@ -85,6 +85,7 @@ def validate_model(agent_id: str, model: str) -> None:
 CUSTOM_ENDPOINT_ENV_KEYS = frozenset(
     {
         "ANTHROPIC_BASE_URL",
+        "CODEX_OSS_BASE_URL",
         "OPENAI_BASE_URL",
         "OPENAI_API_BASE",
     }
@@ -381,8 +382,10 @@ class AgentSpec:
             overrides it, which entry in `sbx.AGENT_CLI_BUILDERS` builds
             the in-sandbox invocation.
         run_label: Optional disambiguator, needed when the same agent_id
-            appears more than once for one feature (e.g. running "claude"
-            twice to compare non-determinism).
+            and model appear more than once for one feature (e.g. running
+            "claude" twice to compare non-determinism). When unset,
+            expand_jobs fills in the resolved model (see
+            job.expand.with_default_run_label).
         model: Per-spec model override. Falls back to the agent's
             AgentProfile default, then its DEFAULT_MODELS entry (if any),
             then config.model (see resolve_model). Unlisted names produce

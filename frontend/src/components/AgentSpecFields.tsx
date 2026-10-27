@@ -9,7 +9,7 @@
  * server's KNOWN_MODELS list cannot know ahead of time.
  *
  * "Local Ollama model" is a preset over `env`, not a separate setting: it
- * writes the variables that point claude at the host's Ollama and swaps the
+ * writes the variables that point claude or codex at the host's Ollama and swaps the
  * model suggestions for what Ollama has pulled. Clearing it removes exactly
  * those variables and leaves any others alone.
  */
@@ -43,7 +43,7 @@ export function AgentSpecFields({
   const supportsSkipPermissions = known?.supports_skip_permissions ?? true;
   const commandId = `command-${index}-${agentIndex}`;
   const offersOllama = acceptsModel && supportsOllamaPreset(agent.agent_id);
-  const ollama = offersOllama && usesOllama(agent.env);
+  const ollama = offersOllama && usesOllama(agent.agent_id, agent.env);
 
   // The id names the suggestion source, not just the row: Chromium keeps
   // showing a datalist's old options when they are swapped in place, so a
@@ -134,7 +134,7 @@ export function AgentSpecFields({
       type: "setAgentEnv",
       index,
       agentIndex,
-      env: on ? withOllama(agent.env, keepModel ? agent.model : null) : withoutOllama(agent.env),
+      env: on ? withOllama(agent.agent_id, agent.env, keepModel ? agent.model : null) : withoutOllama(agent.env),
     });
   }
 
@@ -200,7 +200,7 @@ export function AgentSpecFields({
                     type: "setAgentEnv",
                     index,
                     agentIndex,
-                    env: withOllama(agent.env, e.target.value.trim() || null),
+                    env: withOllama(agent.agent_id, agent.env, e.target.value.trim() || null),
                   });
                 }
               }}
@@ -240,7 +240,7 @@ export function AgentSpecFields({
                 value: e.target.value,
               })
             }
-            placeholder="Only to run one agent twice"
+            placeholder="Defaults to the model name"
           />
         </Field>
 

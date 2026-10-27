@@ -174,6 +174,19 @@ describe("AgentSpecFields", () => {
       });
     });
 
+    it("points codex at Ollama's OpenAI-compatible endpoint", () => {
+      const dispatch = fields({ agent_id: "codex", env: { DEBUG: "1" } });
+
+      fireEvent.click(screen.getByRole("checkbox", { name: /local ollama model/i }));
+
+      expect(dispatch).toHaveBeenCalledWith({
+        type: "setAgentEnv",
+        index: 0,
+        agentIndex: 0,
+        env: { DEBUG: "1", CODEX_OSS_BASE_URL: `${OLLAMA_BASE_URL}/v1` },
+      });
+    });
+
     it("suggests the saved Ollama models", async () => {
       stubOllama({ available: true, models: ["qwen3.5:122b", "gemma4:31b"], model_source: "cli" });
 

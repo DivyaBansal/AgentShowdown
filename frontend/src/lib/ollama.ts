@@ -1,10 +1,10 @@
 import type { EnvVars } from "../api";
 
-/** Pointing the claude agent at the host's Ollama, as a preset of env vars.
+/** Pointing an agent at the host's Ollama, as a preset of env vars.
  *
  * Nothing here is new capability: the backend already routes an agent to a
  * custom endpoint through its `env` (and waives the known-model check when a
- * base-URL var is set). This just writes the three variables that takes so
+ * base-URL var is set). This just writes the variables each agent needs so
  * nobody has to remember them.
  */
 
@@ -23,22 +23,36 @@ const AUTH_TOKEN_KEY = "ANTHROPIC_AUTH_TOKEN";
  *  no such name, so those go to the chosen model too. */
 const HAIKU_MODEL_KEY = "ANTHROPIC_DEFAULT_HAIKU_MODEL";
 
-const OLLAMA_KEYS = [BASE_URL_KEY, AUTH_TOKEN_KEY, HAIKU_MODEL_KEY];
+/** codex's own variable for its `--oss` provider. Setting it is also what
+ *  makes the backend run codex with `--oss --local-provider ollama`. */
+const CODEX_OSS_BASE_URL_KEY = "CODEX_OSS_BASE_URL";
 
-/** The agents this preset applies to: it sets Anthropic-API variables. */
+/** codex speaks Ollama's OpenAI-compatible API, which lives under /v1. */
+const CODEX_OLLAMA_BASE_URL = `${OLLAMA_BASE_URL}/v1`;
+
+const OLLAMA_KEYS = [BASE_URL_KEY, AUTH_TOKEN_KEY, HAIKU_MODEL_KEY, CODEX_OSS_BASE_URL_KEY];
+
+/** The agents this preset applies to: those with an Ollama route wired up. */
 export function supportsOllamaPreset(agentId: string): boolean {
-  return agentId === "claude";
+  return agentId === "claude" || agentId === "codex";
 }
 
-export function usesOllama(env: EnvVars | undefined): boolean {
+export function usesOllama(agentId: string, env: EnvVars | undefined): boolean {
+  if (agentId === "codex") return env?.[CODEX_OSS_BASE_URL_KEY] === CODEX_OLLAMA_BASE_URL;
+
   return env?.[BASE_URL_KEY] === OLLAMA_BASE_URL;
 }
 
 /** `env` with the Ollama variables set, keeping any others the user added. */
 export function withOllama(
+  agentId: string,
   env: EnvVars | undefined,
   model: string | null,
 ): EnvVars {
+  if (agentId === "codex") {
+    return { ...env, [CODEX_OSS_BASE_URL_KEY]: CODEX_OLLAMA_BASE_URL };
+  }
+
   const next: EnvVars = {
     ...env,
     [BASE_URL_KEY]: OLLAMA_BASE_URL,
