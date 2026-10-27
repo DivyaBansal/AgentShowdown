@@ -8,6 +8,7 @@ import {
   elapsedSeconds,
   formatDiff,
   formatDuration,
+  formatTimestamp,
   groupJobs,
   latestActivity,
   placements,
@@ -116,6 +117,24 @@ describe("formatters", () => {
     expect(formatDuration(42.25)).toBe("42.3s");
     expect(formatDuration(93.5)).toBe("1m 34s");
     expect(formatDiff(job({ lines_added: 12, lines_removed: null }))).toBe("+12 / −0");
+  });
+});
+
+describe("formatTimestamp", () => {
+  it("formats a timestamp in the viewer's locale", () => {
+    const iso = "2026-10-26T09:30:00+00:00";
+
+    const expected = new Date(iso).toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+
+    expect(formatTimestamp(iso)).toBe(expected);
+  });
+
+  it("is null when there is no usable timestamp", () => {
+    expect(formatTimestamp(null)).toBeNull();
+    expect(formatTimestamp("not a date")).toBeNull();
   });
 });
 

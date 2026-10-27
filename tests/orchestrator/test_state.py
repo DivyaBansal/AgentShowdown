@@ -476,3 +476,69 @@ def test_upserts_that_do_not_touch_status_leave_the_category_alone(tmp_path: Pat
 
     assert job is not None
     assert job["failure_category"] == "timeout"
+
+
+def test_delete_run_removes_its_jobs_and_their_telemetry(tmp_path: Path) -> None:
+    store = StateStore(str(tmp_path / "state.sqlite3"))
+    store.add_run("run-a", feature_id="f1", created_at="t0", mode="live", status="finished")
+    store.add_run("run-b", feature_id="f1", created_at="t1", mode="live", status="finished")
+    store.upsert("box-1", feature_id="f1", agent_id="claude", status="succeeded", run_id="run-a")
+    store.upsert("box-2", feature_id="f1", agent_id="codex", status="succeeded", run_id="run-b")
+    for name in ("box-1", "box-2"):
+        store.add_sample(_sample(name, "2026-01-01T00:00:00+00:00"))
+        store.add_agent_events(name, [state.AgentEventRow(name="e", ts=None)])
+        store.set_agent_launched_at(name, "t0")
+
+    assert store.delete_run("run-a") == ["box-1"]
+
+    assert store.get_run("run-a") is None
+    assert store.get("box-1") is None
+    assert store.get_samples("box-1") == []
+    assert store.get_agent_events("box-1") == []
+    assert store.get_agent_launched_at("box-1") is None
+    # The other run is untouched.
+    assert store.get("box-2") is not None
+    assert len(store.get_samples("box-2")) == 1
+    assert len(store.get_agent_events("box-2")) == 1
+
+
+def test_codex_stream_noise_does_not_crowd_tool_calls_out_of_the_limit(tmp_path: Path) -> None:
+    """codex sends thousands of `*.delta` stream events and metric-export
+    errors per run; counted against `limit`, they pushed a finished job's
+    tool calls out of the window the timeline reads."""
+    store = StateStore(str(tmp_path / "state.sqlite3"))
+    store.upsert("box", feature_id="f1", agent_id="codex", status="succeeded")
+    store.add_agent_events(
+        "box",
+        [
+            state.AgentEventRow(
+                name="codex.tool_result", ts=None, attributes={"tool_name": "shell"}
+            ),
+            state.AgentEventRow(
+                name="codex.sse_event",
+                ts=None,
+                attributes={"event.kind": "response.completed", "input_token_count": 10},
+            ),
+            *[
+                state.AgentEventRow(
+                    name="codex.sse_event",
+                    ts=None,
+                    attributes={"event.kind": "response.output_text.delta"},
+                )
+                for _ in range(20)
+            ],
+            *[
+                state.AgentEventRow(
+                    name="metrics counter [codex.sse_event] failed: tag value contains "
+                    "invalid characters: qwen3.5:122b",
+                    ts=None,
+                )
+                for _ in range(20)
+            ],
+        ],
+    )
+
+    events = store.get_agent_events("box", limit=5)
+
+    assert [e["name"] for e in events] == ["codex.tool_result", "codex.sse_event"]
+    assert events[1]["attributes"]["event.kind"] == "response.completed"

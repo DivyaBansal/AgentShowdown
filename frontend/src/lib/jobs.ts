@@ -96,6 +96,19 @@ export function formatDuration(seconds: number | null): string | null {
   return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
 }
 
+/** An ISO-8601 timestamp as a short date and time in the viewer's locale,
+ *  or null when there's none (a job still queued has no `started_at`) or
+ *  it won't parse. */
+export function formatTimestamp(iso: string | null): string | null {
+  if (iso === null) return null;
+
+  const ms = Date.parse(iso);
+
+  if (Number.isNaN(ms)) return null;
+
+  return new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
 /** Seconds to display as a job's duration.
  *
  * The backend only records `duration_seconds` once an attempt finishes, so

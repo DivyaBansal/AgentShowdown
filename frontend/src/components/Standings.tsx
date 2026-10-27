@@ -17,13 +17,14 @@ import {
   elapsedSeconds,
   formatDiff,
   formatDuration,
+  formatTimestamp,
   placements,
   statusTone,
   totalTokens,
 } from "../lib/jobs";
 import { StatusChip } from "./ui/StatusChip";
 
-type SortKey = "rank" | "agent" | "duration" | "tokens" | "diff";
+type SortKey = "rank" | "agent" | "started" | "duration" | "tokens" | "diff";
 
 interface Column {
   key: SortKey;
@@ -34,6 +35,7 @@ interface Column {
 const COLUMNS: Column[] = [
   { key: "rank", label: "Rank", numeric: false },
   { key: "agent", label: "Agent", numeric: false },
+  { key: "started", label: "Started", numeric: false },
   { key: "duration", label: "Duration", numeric: true },
   { key: "tokens", label: "Tokens", numeric: true },
   { key: "diff", label: "Lines +/−", numeric: true },
@@ -43,6 +45,14 @@ function diffSize(job: Job): number | null {
   if (job.lines_added === null && job.lines_removed === null) return null;
 
   return (job.lines_added ?? 0) + (job.lines_removed ?? 0);
+}
+
+function startedMs(job: Job): number | null {
+  if (job.started_at === null) return null;
+
+  const ms = Date.parse(job.started_at);
+
+  return Number.isNaN(ms) ? null : ms;
 }
 
 function verdict(value: number | null) {
@@ -65,6 +75,7 @@ export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job
   // Nullable columns keep unreported values last in *both* directions:
   // flipping the sort must not float "no data" to the top as if it won.
   const metric: Record<Exclude<SortKey, "rank" | "agent">, (job: Job) => number | null> = {
+    started: startedMs,
     duration: (job) => elapsedSeconds(job, now),
     tokens: totalTokens,
     diff: diffSize,
@@ -144,6 +155,9 @@ export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job
                     />
                     {seriesKey(job)}
                   </span>
+                </td>
+                <td className="num">
+                  {formatTimestamp(job.started_at) ?? <span className="no-data">—</span>}
                 </td>
                 <td className="is-num num">
                   {formatDuration(elapsedSeconds(job, now)) ?? <span className="no-data">—</span>}

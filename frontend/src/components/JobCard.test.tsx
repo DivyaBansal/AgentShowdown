@@ -1,5 +1,6 @@
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { formatTimestamp } from "../lib/jobs";
 import { JobCard } from "./JobCard";
 import type { Job } from "../api";
 
@@ -108,6 +109,21 @@ describe("JobCard", () => {
     const tokens = screen.getByText("Tokens").nextElementSibling;
     expect(tokens).toHaveTextContent("not reported");
     expect(tokens).not.toHaveTextContent("0");
+  });
+
+  it("shows when the job started", () => {
+    const startedAt = "2026-10-26T09:30:00+00:00";
+    render(<JobCard job={job({ started_at: startedAt })} color="c" />);
+
+    expect(screen.getByText("Started").nextElementSibling).toHaveTextContent(
+      formatTimestamp(startedAt)!,
+    );
+  });
+
+  it("says a queued job hasn't started rather than 'not reported'", () => {
+    render(<JobCard job={job({ status: "queued", started_at: null })} color="c" />);
+
+    expect(screen.getByText("Started").nextElementSibling).toHaveTextContent("not started");
   });
 
   it("counts the duration up while the job is running", () => {

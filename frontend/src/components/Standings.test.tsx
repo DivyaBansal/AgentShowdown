@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { Job } from "../api";
+import { formatTimestamp } from "../lib/jobs";
 import { Standings } from "./Standings";
 
 function job(overrides: Partial<Job> = {}): Job {
@@ -89,8 +90,29 @@ describe("Standings", () => {
     render(<Standings jobs={JOBS} colorFor={() => "red"} />);
     const cursorRow = screen.getByText("cursor").closest("tr")!;
     const cells = within(cursorRow).getAllByRole("cell");
-    expect(cells[3]).toHaveTextContent("—");
-    expect(cells[3]).not.toHaveTextContent("0");
+    expect(cells[4]).toHaveTextContent("—");
+    expect(cells[4]).not.toHaveTextContent("0");
+  });
+
+  it("shows when each job started, and sorts by it", () => {
+    const early = "2026-10-26T09:00:00+00:00";
+    const late = "2026-10-26T10:00:00+00:00";
+    render(
+      <Standings
+        jobs={[
+          job({ sandbox_name: "b", agent_id: "codex", started_at: late }),
+          job({ sandbox_name: "a", agent_id: "claude", started_at: early }),
+        ]}
+        colorFor={() => "red"}
+      />,
+    );
+
+    expect(screen.getByText(formatTimestamp(early)!)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /started/i }));
+    expect(agentOrder()).toEqual(["claude", "codex"]);
+    fireEvent.click(screen.getByRole("button", { name: /started/i }));
+    expect(agentOrder()).toEqual(["codex", "claude"]);
   });
 
   it("reports test and lint results as pass or fail", () => {

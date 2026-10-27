@@ -10,6 +10,7 @@ import {
   elapsedSeconds,
   formatDiff,
   formatDuration,
+  formatTimestamp,
   latestActivity,
   statusTone,
   totalTokens,
@@ -24,12 +25,20 @@ import { StatusChip } from "./ui/StatusChip";
  * expose no token usage at all, and showing zero would make them look free
  * next to an agent that actually reported its spend.
  */
-function Metric({ label, value }: { label: string; value: string | null }) {
+function Metric({
+  label,
+  value,
+  missing = "not reported",
+}: {
+  label: string;
+  value: string | null;
+  missing?: string;
+}) {
   return (
     <>
       <dt>{label}</dt>
       <dd title={value ?? undefined}>
-        {value ?? <span className="no-data">not reported</span>}
+        {value ?? <span className="no-data">{missing}</span>}
       </dd>
     </>
   );
@@ -106,6 +115,11 @@ export function JobCard({
       {job.status === "awaiting_input" && <ReplyForm job={job} showQuestion={false} />}
       <dl>
         <Metric label="Model" value={job.model} />
+        <Metric
+          label="Started"
+          value={formatTimestamp(job.started_at)}
+          missing="not started"
+        />
         <Metric label="Duration" value={formatDuration(elapsedSeconds(job, now))} />
         <Metric label="Tokens" value={tokens === null ? null : `${tokens}`} />
         <Metric label="Diff" value={formatDiff(job)} />
