@@ -149,9 +149,15 @@ describe("endpoints unwrap their envelope", () => {
 });
 
 describe("fetchJobLog", () => {
-  it("returns the tail text, unwrapped from the envelope", async () => {
-    vi.stubGlobal("fetch", ok({ sandbox_name: "box-1", tail: "building...\ndone." }));
-    await expect(fetchJobLog("box-1")).resolves.toBe("building...\ndone.");
+  it("returns the tail text and where it came from, unwrapped from the envelope", async () => {
+    vi.stubGlobal(
+      "fetch",
+      ok({ sandbox_name: "box-1", tail: "building...\ndone.", source: "saved" }),
+    );
+    await expect(fetchJobLog("box-1")).resolves.toEqual({
+      tail: "building...\ndone.",
+      source: "saved",
+    });
   });
 
   it("omits the query string when no tail length is given", async () => {
@@ -194,10 +200,10 @@ describe("replying to a job", () => {
 });
 
 describe("fetchJobTranscript", () => {
-  it("returns the entries, unwrapped from the envelope", async () => {
+  it("returns the entries and where they came from, unwrapped from the envelope", async () => {
     const entries = [{ index: 0, kind: "result", text: "done" }];
-    vi.stubGlobal("fetch", ok({ sandbox_name: "box-1", entries }));
-    await expect(fetchJobTranscript("box-1")).resolves.toEqual(entries);
+    vi.stubGlobal("fetch", ok({ sandbox_name: "box-1", entries, source: "sandbox" }));
+    await expect(fetchJobTranscript("box-1")).resolves.toEqual({ entries, source: "sandbox" });
   });
 
   it("omits the query string when no tail length is given", async () => {

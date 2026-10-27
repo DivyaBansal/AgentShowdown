@@ -4,11 +4,20 @@
  */
 
 import { useState } from "react";
-import { ApiError, fetchJobLog, fetchJobTranscript, type TranscriptEntry } from "../api";
+import {
+  ApiError,
+  fetchJobLog,
+  fetchJobTranscript,
+  type LogSource,
+  type TranscriptEntry,
+} from "../api";
 import { Notice } from "./ui/Notice";
 import { Transcript } from "./Transcript";
 
 const DEEP_FETCH_LINES = 2000;
+
+const SAVED_NOTE =
+  "This job's sandbox has been removed, so this is the output saved during the run.";
 
 export function LogView({
   sandboxName,
@@ -23,13 +32,16 @@ export function LogView({
   const [transcript, setTranscript] = useState<TranscriptEntry[] | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
+  const [source, setSource] = useState<LogSource | null>(null);
 
   async function handleLoadMore() {
     setLoading(true);
     setError(null);
 
     try {
-      setDeep(await fetchJobLog(sandboxName, DEEP_FETCH_LINES));
+      const log = await fetchJobLog(sandboxName, DEEP_FETCH_LINES);
+      setDeep(log.tail);
+      setSource(log.source);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not load the full log");
     } finally {
@@ -42,7 +54,9 @@ export function LogView({
     setTranscriptError(null);
 
     try {
-      setTranscript(await fetchJobTranscript(sandboxName));
+      const result = await fetchJobTranscript(sandboxName);
+      setTranscript(result.entries);
+      setSource(result.source);
     } catch (err) {
       setTranscriptError(err instanceof ApiError ? err.message : "Could not load the transcript");
     } finally {
@@ -50,7 +64,10 @@ export function LogView({
     }
   }
 
-  const text = deep ?? tail;
+  // An empty deeper fetch must not blank out the tail already on screen.
+  const text = deep || tail;
+  // Agents with no JSON output parse to nothing; keep the raw log up for those.
+  const showRaw = transcript === null || transcript.length === 0;
 
   return (
     <div className="stack stack--tight">
@@ -79,13 +96,10 @@ export function LogView({
           )}
         </div>
       </div>
-      {transcript !== null ? (
-        <Transcript entries={transcript} />
-      ) : text ? (
-        <pre className="log">{text}</pre>
-      ) : (
-        <p className="hint">No output yet.</p>
-      )}
+      {source === "saved" && <p className="hint">{SAVED_NOTE}</p>}
+      {transcript !== null && <Transcript entries={transcript} />}
+      {showRaw &&
+        (text ? <pre className="log">{text}</pre> : <p className="hint">No output yet.</p>)}
       {error && <Notice tone="danger">{error}</Notice>}
       {transcriptError && <Notice tone="danger">{transcriptError}</Notice>}
     </div>

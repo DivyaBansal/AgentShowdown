@@ -22,7 +22,9 @@ from backend.api.models import (
     JobQuery,
     KillAllRequest,
     LogQuery,
+    LogSource,
     RemoveSandboxRequest,
+    RunIdPath,
     StartRunRequest,
 )
 from backend.api.preflight import preflight
@@ -33,6 +35,8 @@ from backend.api.routes_otlp import register_otlp_routes
 from backend.api.routes_setup import register_setup_routes
 from backend.api.runner import (
     RunConflictError,
+    UnknownRunError,
+    delete_run,
     start_answer,
     start_followup,
     start_respawn,
@@ -86,6 +90,23 @@ def _config() -> Config:
             status_code=503,
             detail=f"No orchestrator config found: {exc}",
         ) from exc
+
+
+def _read_log(sandbox_name: str, tail_lines: int) -> tuple[str, LogSource]:
+    """Reads a job's log from its sandbox, or its saved tail once it's gone.
+
+    Finished sandboxes are removed, so the live read comes back empty;
+    the `log_tail` saved on every poll tick is the only output left then.
+    """
+    tail = sbx_tail_log(sandbox_name, AGENT_LOG_PATH, tail_lines)
+    if tail:
+        return tail, "sandbox"
+
+    with StateStore(_config().state_db_path) as store:
+        job = store.get(sandbox_name)
+
+    saved = (job or {}).get("log_tail") or ""
+    return (saved, "saved") if saved else ("", "sandbox")
 
 
 def register_routes(app: FastAPI) -> None:  # noqa: PLR0915 -- one call per route
@@ -194,6 +215,22 @@ def register_routes(app: FastAPI) -> None:  # noqa: PLR0915 -- one call per rout
                 raise HTTPException(status_code=404, detail=f"Unknown run: {run_id}")
             return {"run": run, "jobs": store.jobs_for_run(run_id)}
 
+    @app.delete("/runs/{run_id}")
+    def remove_run(path: Annotated[RunIdPath, Depends()]) -> dict[str, list[str]]:
+        """Deletes a finished run's history: the run, its jobs and their telemetry.
+
+        Only the record goes -- branches and PRs it produced are untouched.
+        Refused while anything in the run is still live (see `delete_run`).
+        """
+        try:
+            deleted = delete_run(_config(), path.run_id)
+        except UnknownRunError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CommandError as exc:
+            log.warning("run_delete_rejected", run_id=path.run_id, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"deleted": deleted}
+
     @app.get("/jobs")
     def list_jobs(query: Annotated[JobQuery, Depends()]) -> dict[str, object]:
         with StateStore(_config().state_db_path) as store:
@@ -208,12 +245,13 @@ def register_routes(app: FastAPI) -> None:  # noqa: PLR0915 -- one call per rout
     def get_log(sandbox_name: str, query: Annotated[LogQuery, Depends()]) -> dict[str, object]:
         """An on-demand deeper log tail, read straight from the sandbox.
 
-        Returns "" rather than 404 when the sandbox is gone or the log
-        doesn't exist yet -- same leniency as `/samples`, since "nothing to
-        show yet" and "never existed" look the same from here.
+        Falls back to the job's saved `log_tail` once the sandbox is gone,
+        with `source` saying which one this is. Returns "" rather than 404
+        when neither exists -- same leniency as `/samples`, since "nothing
+        to show yet" and "never existed" look the same from here.
         """
-        tail = sbx_tail_log(sandbox_name, AGENT_LOG_PATH, query.tail)
-        return {"sandbox_name": sandbox_name, "tail": tail}
+        tail, source = _read_log(sandbox_name, query.tail)
+        return {"sandbox_name": sandbox_name, "tail": tail, "source": source}
 
     @app.get("/jobs/{sandbox_name}/transcript")
     def get_transcript(
@@ -224,13 +262,14 @@ def register_routes(app: FastAPI) -> None:  # noqa: PLR0915 -- one call per rout
         Parsed from the same tail `/log` reads, so it works mid-run, not
         just after a job finishes. Agents whose output isn't JSON (cursor,
         opencode, copilot, a custom `command:`) yield an empty entry list --
-        the UI falls back to the raw tail for those, same as `/log`'s
-        leniency for a gone sandbox.
+        the UI falls back to the raw tail for those. Uses the same saved
+        tail fallback as `/log` for a gone sandbox.
         """
-        tail = sbx_tail_log(sandbox_name, AGENT_LOG_PATH, query.tail)
+        tail, source = _read_log(sandbox_name, query.tail)
         entries = parse_transcript(tail)
         return {
             "sandbox_name": sandbox_name,
+            "source": source,
             "entries": [{"index": e.index, "kind": e.kind, "text": e.text} for e in entries],
         }
 

@@ -131,6 +131,16 @@ class FollowupRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
 
 
+class RunIdPath(BaseModel):
+    """The run id in ``DELETE /runs/{run_id}``.
+
+    Pinned to the shape `start_run` mints, so a malformed id is rejected at
+    the boundary instead of reaching the store as a no-op delete.
+    """
+
+    run_id: str = Field(pattern=r"^run-[0-9a-f]{12}$")
+
+
 class JobQuery(BaseModel):
     """Query params for ``GET /jobs``.
 
@@ -152,6 +162,11 @@ class LogQuery(BaseModel):
     """
 
     tail: int = Field(default=200, ge=1, le=2000)
+
+
+# Where a log read came from: the live sandbox, or the tail saved on the
+# job row once the sandbox is gone.
+LogSource = Literal["sandbox", "saved"]
 
 
 class AgentEventsQuery(BaseModel):

@@ -93,4 +93,55 @@ describe("LogView", () => {
     );
     expect(screen.getByText("raw tail text")).toBeInTheDocument();
   });
+
+  it("keeps the tail on screen when the deeper fetch comes back empty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ sandbox_name: "box-1", tail: "", source: "sandbox" }),
+      }),
+    );
+    render(<LogView sandboxName="box-1" tail="just the recent tail" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /load full log/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /load full log/i })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText(/just the recent tail/)).toBeInTheDocument();
+  });
+
+  it("says when the log is the saved copy of a removed sandbox", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ sandbox_name: "box-1", tail: "saved output", source: "saved" }),
+      }),
+    );
+    render(<LogView sandboxName="box-1" tail="saved output" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /load full log/i }));
+
+    expect(await screen.findByText(/sandbox has been removed/i)).toBeInTheDocument();
+    expect(screen.getByText("saved output")).toBeInTheDocument();
+  });
+
+  it("keeps the raw tail when the structured view finds no events", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ sandbox_name: "box-1", entries: [], source: "saved" }),
+      }),
+    );
+    render(<LogView sandboxName="box-1" tail="plain text output" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /show structured view/i }));
+
+    expect(await screen.findByText(/no structured events found/i)).toBeInTheDocument();
+    expect(screen.getByText("plain text output")).toBeInTheDocument();
+    expect(screen.getByText(/sandbox has been removed/i)).toBeInTheDocument();
+  });
 });
