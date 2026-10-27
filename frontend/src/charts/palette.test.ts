@@ -8,7 +8,7 @@ import {
 } from "./palette";
 import type { Job } from "../api";
 
-function job(agent_id: string, run_label: string | null = null): Job {
+function job(agent_id: string, run_label: string | null = null, model: string | null = null): Job {
   return {
     sandbox_name: `box-${agent_id}-${run_label ?? ""}`,
     feature_id: "f1",
@@ -21,7 +21,7 @@ function job(agent_id: string, run_label: string | null = null): Job {
     created_at: "",
     updated_at: "",
     run_id: null,
-    model: null,
+    model,
     started_at: null,
     finished_at: null,
     duration_seconds: null,
@@ -49,8 +49,16 @@ describe("seriesKey", () => {
     expect(seriesKey(job("claude", "a"))).not.toBe(seriesKey(job("claude", "b")));
   });
 
-  it("uses the bare agent id when there is no run label", () => {
+  it("uses the bare agent id when there is no run label or model", () => {
     expect(seriesKey(job("claude"))).toBe("claude");
+  });
+
+  it("qualifies the agent with its model when there is no run label", () => {
+    expect(seriesKey(job("claude", null, "sonnet"))).toBe("claude · sonnet");
+  });
+
+  it("prefers the user's run label over the model", () => {
+    expect(seriesKey(job("codex", "luna", "gpt-5"))).toBe("codex · luna");
   });
 });
 

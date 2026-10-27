@@ -22,11 +22,16 @@ export const SERIES_VARS = [
 
 export const OVERFLOW_VAR = "var(--de-emphasis)";
 
-/** Stable identity for a job's series: the same agent run twice under
- *  different run_labels is two distinct series, which is the whole point of
- *  run_label as a comparison axis. */
-export function seriesKey(job: Pick<Job, "agent_id" | "run_label">): string {
-  return job.run_label ? `${job.agent_id} · ${job.run_label}` : job.agent_id;
+type SeriesIdentity = Pick<Job, "agent_id" | "run_label" | "model">;
+
+/** Stable identity for a job's series: agent plus the user's run_label when
+ *  one was given, else agent plus model. The same agent under two models or
+ *  two run_labels is two distinct series -- that difference is usually the
+ *  very thing being compared. */
+export function seriesKey(job: SeriesIdentity): string {
+  const qualifier = job.run_label || job.model;
+
+  return qualifier ? `${job.agent_id} · ${qualifier}` : job.agent_id;
 }
 
 /** Builds a stable key -> colour map from the COMPLETE set of jobs.
@@ -57,7 +62,7 @@ export function assignSeriesColors(roster: Job[]): Map<string, string> {
  */
 export function assignSeriesColorsFor(
   roster: Job[],
-): (job: Pick<Job, "agent_id" | "run_label">) => string {
+): (job: SeriesIdentity) => string {
   const colors = assignSeriesColors(roster);
 
   return (job) => colors.get(seriesKey(job)) ?? OVERFLOW_VAR;
