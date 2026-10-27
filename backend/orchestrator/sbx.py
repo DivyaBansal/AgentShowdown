@@ -38,7 +38,7 @@ def sbx_create_detached(
 ) -> None:
     """
     Create a sandbox (in --clone mode) without attaching or launching the
-    agent. Equivalent to: sbx create --clone claude --name X <workspace>
+    agent. Equivalent to: sbx create --no-progress --clone claude --name X <workspace>
 
     NOTE: `sbx run <agent> --detached -- ...` looks like it launches the
     agent headlessly and returns once it's running, but in practice (as of
@@ -73,7 +73,7 @@ def sbx_create_detached(
             `nproc` and `free` inside the sandbox report them, and that
             allocating past the memory limit fails.
     """
-    cmd = ["sbx", "create", "--clone", agent, "--name", sandbox_name]
+    cmd = ["sbx", "create", "--no-progress", "--clone", agent, "--name", sandbox_name]
     for kit_ref in kit or []:
         cmd += ["--kit", kit_ref]
     for key, value in sorted((env or {}).items()):
@@ -87,7 +87,10 @@ def sbx_create_detached(
         if model:
             cmd += ["--model", model]
     cmd.append(workspace)
-    run(cmd, options=RunOptions(capture=False))
+    # Captured so a failure's CommandError carries sbx's own reason (e.g. a
+    # rejected sandbox name) instead of `stderr: None`. --no-progress keeps
+    # the image-pull progress lines out of that message.
+    run(cmd)
 
 
 def build_claude_cmd(
@@ -321,6 +324,30 @@ AGENT_CLI_BUILDERS = {
     "copilot": build_copilot_cmd,
 }
 
+# Set in an agent's env to point codex at an Ollama server instead of OpenAI
+# (codex's own variable for its `--oss` provider). The sandbox env alone
+# isn't enough: codex only consults it when also run with `--oss`.
+CODEX_OSS_BASE_URL_KEY = "CODEX_OSS_BASE_URL"
+
+
+def with_local_provider(agent_id: str, argv: list[str], env: dict[str, str]) -> list[str]:
+    """Switches a codex invocation to its Ollama provider when `env` asks for it.
+
+    Args:
+        agent_id: Which CLI `argv` runs.
+        argv: The invocation from `build_agent_cmd`.
+        env: The job's resolved sandbox env (from config.resolve_env).
+
+    Returns:
+        `argv` with `--oss --local-provider ollama` right after `exec` (before
+        any `resume` subcommand) for a codex job whose env sets
+        CODEX_OSS_BASE_URL_KEY; otherwise `argv` unchanged.
+    """
+    if agent_id != "codex" or CODEX_OSS_BASE_URL_KEY not in env:
+        return argv
+    return [*argv[:2], "--oss", "--local-provider", "ollama", *argv[2:]]
+
+
 # Builders that take `dangerously_skip_permissions` but have no flag to map
 # it onto, so setting it does nothing. `opencode run` is already
 # non-interactive (see build_opencode_cmd). Offering the toggle for these
@@ -387,6 +414,7 @@ def build_agent_invocation(
     command_override: str | None = None,
     resume: bool = False,
     otel_url: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> str:
     """Builds the shell command string that runs one agent turn.
 
@@ -408,6 +436,9 @@ def build_agent_invocation(
         otel_url: OTLP/HTTP logs URL to export the CLI's telemetry to (see
             agent_otel). Ignored with command_override, which replaces the
             registered CLI invocation the settings attach to.
+        env: The job's resolved sandbox env; selects codex's Ollama
+            provider (see with_local_provider). Ignored with
+            command_override.
 
     Returns:
         A shell command string (may be multiple lines when
@@ -429,6 +460,7 @@ def build_agent_invocation(
         skip_permissions_override=skip_permissions_override,
         resume=resume,
     )
+    argv = with_local_provider(agent_id, argv, env or {})
     if otel_url:
         argv = with_otel(agent_id, argv, otel_url)
     return shlex.join(argv)
@@ -504,6 +536,7 @@ def sbx_launch_agent(
     skip_permissions_override: bool | None = None,
     command_override: str | None = None,
     resume: bool = False,
+    env: dict[str, str] | None = None,
 ) -> None:
     """Starts (or resumes) the agent inside an already-created sandbox,
     self-daemonized inside a plain `sbx exec` so this call returns immediately.
@@ -520,6 +553,7 @@ def sbx_launch_agent(
             (see build_agent_invocation).
         resume: Whether to resume the most recent session instead of
             starting fresh.
+        env: The job's resolved sandbox env (see build_agent_invocation).
     """
     endpoint = config.agent_otel_endpoint
     otel_url = (
@@ -536,6 +570,7 @@ def sbx_launch_agent(
         command_override=command_override,
         resume=resume,
         otel_url=otel_url,
+        env=env,
     )
     shell_cmd = build_agent_shell_command(cmd_str, config.status_file, AGENT_LOG_PATH)
     # No `-d`: sbx v0.48.0 rejects it outright ("--detach is not supported

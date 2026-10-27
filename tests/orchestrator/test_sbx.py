@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -189,6 +190,50 @@ def test_build_agent_invocation_command_override_resume_sets_orch_resume_1() -> 
         "shell", "follow up", _config(), command_override="my-script.sh", resume=True
     )
     assert "export ORCH_RESUME=1\n" in cmd_str
+
+
+OLLAMA_ENV = {"CODEX_OSS_BASE_URL": "http://host.docker.internal:11434/v1"}
+
+
+def test_build_agent_invocation_points_codex_at_ollama_when_env_sets_its_base_url() -> None:
+    argv = shlex.split(
+        sbx.build_agent_invocation(
+            "codex", "do the thing", _config(capture_usage=False), env=OLLAMA_ENV
+        )
+    )
+    assert argv[:5] == ["codex", "exec", "--oss", "--local-provider", "ollama"]
+    assert argv[-1] == "do the thing"
+
+
+def test_build_agent_invocation_keeps_codex_on_ollama_when_resuming() -> None:
+    argv = shlex.split(
+        sbx.build_agent_invocation("codex", "go on", _config(), resume=True, env=OLLAMA_ENV)
+    )
+    # Options for `exec` go before its `resume` subcommand.
+    assert argv.index("--oss") < argv.index("resume")
+
+
+def test_build_agent_invocation_without_the_ollama_var_leaves_codex_on_openai() -> None:
+    cmd_str = sbx.build_agent_invocation("codex", "hi", _config(), env={"FOO": "bar"})
+    assert "--oss" not in cmd_str
+
+
+def test_build_agent_invocation_ignores_the_codex_ollama_var_for_other_agents() -> None:
+    cmd_str = sbx.build_agent_invocation("claude", "hi", _config(), env=OLLAMA_ENV)
+    assert "--oss" not in cmd_str
+
+
+def test_sbx_launch_agent_passes_the_jobs_env_to_the_codex_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scripts: list[str] = []
+    monkeypatch.setattr(sbx, "run", lambda cmd, **k: scripts.append(cmd[-1]) or _completed())
+
+    sbx.sbx_launch_agent(
+        "box-1", "codex", "do the thing", _config(agent_otel_endpoint=None), env=OLLAMA_ENV
+    )
+
+    assert "codex exec --oss --local-provider ollama" in scripts[0]
 
 
 def test_build_agent_shell_command_captures_exit_code_and_falls_back() -> None:
@@ -577,7 +622,9 @@ def test_sbx_create_detached_no_kit_or_provider_matches_today(
     calls = []
     monkeypatch.setattr(sbx, "run", lambda cmd, **k: calls.append(cmd))
     sbx.sbx_create_detached("box-1", "claude", "/repo")
-    assert calls == [["sbx", "create", "--clone", "claude", "--name", "box-1", "/repo"]]
+    assert calls == [
+        ["sbx", "create", "--no-progress", "--clone", "claude", "--name", "box-1", "/repo"]
+    ]
 
 
 def test_sbx_create_detached_passes_repeated_kit_flags(
@@ -590,6 +637,7 @@ def test_sbx_create_detached_passes_repeated_kit_flags(
         [
             "sbx",
             "create",
+            "--no-progress",
             "--clone",
             "claude",
             "--name",
@@ -613,6 +661,7 @@ def test_sbx_create_detached_passes_provider_and_model(
         [
             "sbx",
             "create",
+            "--no-progress",
             "--clone",
             "claude",
             "--name",
@@ -644,6 +693,7 @@ def test_sbx_create_detached_emits_sorted_env_flags_before_workspace(
         [
             "sbx",
             "create",
+            "--no-progress",
             "--clone",
             "claude",
             "--name",
@@ -663,7 +713,9 @@ def test_sbx_create_detached_empty_env_adds_no_flags(
     calls = []
     monkeypatch.setattr(sbx, "run", lambda cmd, **k: calls.append(cmd))
     sbx.sbx_create_detached("box-1", "claude", "/repo", env={})
-    assert calls == [["sbx", "create", "--clone", "claude", "--name", "box-1", "/repo"]]
+    assert calls == [
+        ["sbx", "create", "--no-progress", "--clone", "claude", "--name", "box-1", "/repo"]
+    ]
 
 
 def test_sbx_create_detached_passes_resource_limits_before_workspace(
@@ -676,6 +728,7 @@ def test_sbx_create_detached_passes_resource_limits_before_workspace(
         [
             "sbx",
             "create",
+            "--no-progress",
             "--clone",
             "claude",
             "--name",
@@ -824,3 +877,22 @@ def test_sbx_agent_exited_checks_for_the_exit_marker(
 
     assert sbx.sbx_agent_exited("box-1") is exited
     assert calls[0][-1] == f"test -f {sbx.AGENT_EXIT_PATH}"
+
+
+def test_sbx_create_detached_failure_carries_sbx_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Uncaptured, stdout/stderr are None and the CommandError says nothing
+    # about why sbx refused -- only the server's console saw it.
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        captured = bool(kwargs.get("capture_output"))
+        return subprocess.CompletedProcess(
+            cmd,
+            1,
+            stdout="" if captured else None,
+            stderr="error: sandbox name cannot contain underscores: a_b" if captured else None,
+        )
+
+    monkeypatch.setattr("backend.orchestrator.process.subprocess.run", fake_run)
+    with pytest.raises(CommandError, match="cannot contain underscores"):
+        sbx.sbx_create_detached("a_b", "claude", "/tmp/repo")
