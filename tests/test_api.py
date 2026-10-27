@@ -567,6 +567,75 @@ def test_unknown_run_is_404() -> None:
     assert client.get("/runs/run-nope").status_code == HTTPStatus.NOT_FOUND
 
 
+RUN_ID = "run-0123456789ab"
+
+
+def _finished_run(status: str = "finished", job_status: str = "succeeded") -> None:
+    """Records one run with a single job, plus a sample for that job."""
+    with StateStore(load_config().state_db_path) as store:
+        store.add_run(
+            RUN_ID,
+            feature_id="f1",
+            created_at="2026-01-01T00:00:00+00:00",
+            mode="live",
+            status=status,
+        )
+        store.upsert("box-1", feature_id="f1", agent_id="claude", status=job_status, run_id=RUN_ID)
+        store.set_spec("box-1", "{}")
+
+
+def test_delete_run_removes_the_run_and_its_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _finished_run()
+    monkeypatch.setattr(runner_module, "sbx_list", dict)
+
+    response = client.delete(f"/runs/{RUN_ID}")
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json() == {"deleted": ["box-1"]}
+    assert client.get("/runs").json()["runs"] == []
+    assert client.get("/jobs").json()["jobs"] == []
+    with StateStore(load_config().state_db_path) as store:
+        assert store.get_spec("box-1") is None
+
+
+def test_delete_run_refuses_while_a_job_is_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    _finished_run(job_status="running")
+    monkeypatch.setattr(runner_module, "sbx_list", dict)
+
+    response = client.delete(f"/runs/{RUN_ID}")
+
+    assert response.status_code == HTTPStatus.CONFLICT
+    assert len(client.get("/jobs").json()["jobs"]) == 1
+
+
+def test_delete_run_refuses_while_the_run_is_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    _finished_run(status="running")
+    monkeypatch.setattr(runner_module, "sbx_list", dict)
+
+    assert client.delete(f"/runs/{RUN_ID}").status_code == HTTPStatus.CONFLICT
+
+
+def test_delete_run_refuses_while_a_sandbox_survives(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deleting the record would orphan a sandbox nothing points at any more."""
+    _finished_run(job_status="stopped")
+    monkeypatch.setattr(runner_module, "sbx_list", lambda: {"box-1": {}})
+
+    response = client.delete(f"/runs/{RUN_ID}")
+
+    assert response.status_code == HTTPStatus.CONFLICT
+    assert "remove it first" in response.json()["detail"]
+    assert len(client.get("/runs").json()["runs"]) == 1
+
+
+def test_delete_unknown_run_is_404() -> None:
+    assert client.delete(f"/runs/{RUN_ID}").status_code == HTTPStatus.NOT_FOUND
+
+
+def test_delete_run_rejects_a_malformed_id() -> None:
+    response = client.delete("/runs/not-a-run")
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
 def test_runs_and_jobs_listings_are_empty_initially() -> None:
     assert client.get("/runs").json()["runs"] == []
     assert client.get("/jobs").json()["jobs"] == []
@@ -834,7 +903,7 @@ def test_get_log_returns_the_sandbox_tail(monkeypatch: pytest.MonkeyPatch) -> No
 
     body = client.get("/jobs/box-1/log").json()
 
-    assert body == {"sandbox_name": "box-1", "tail": "line one\nline two\n"}
+    assert body == {"sandbox_name": "box-1", "tail": "line one\nline two\n", "source": "sandbox"}
 
 
 def test_get_log_passes_the_tail_length_through(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -865,7 +934,38 @@ def test_get_log_on_a_gone_sandbox_returns_empty_tail_not_an_error(
 
     body = client.get("/jobs/box-1/log").json()
 
-    assert body == {"sandbox_name": "box-1", "tail": ""}
+    assert body == {"sandbox_name": "box-1", "tail": "", "source": "sandbox"}
+
+
+def _save_tail(sandbox_name: str, tail: str) -> None:
+    with StateStore(load_config().state_db_path) as store:
+        store.upsert(sandbox_name, feature_id="f1", agent_id="claude", status="succeeded")
+        store.update_log_tail(sandbox_name, tail)
+
+
+def test_get_log_on_a_gone_sandbox_falls_back_to_the_saved_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finished sandboxes are removed, so the saved tail is all that's left --
+    returning "" there blanked out output the UI was already showing."""
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed("", returncode=1))
+    _save_tail("box-gone", "saved line\n")
+
+    body = client.get("/jobs/box-gone/log").json()
+
+    assert body == {"sandbox_name": "box-gone", "tail": "saved line\n", "source": "saved"}
+
+
+def test_get_log_prefers_the_live_sandbox_over_the_saved_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed("live line\n"))
+    _save_tail("box-live", "saved line\n")
+
+    body = client.get("/jobs/box-live/log").json()
+
+    assert body["tail"] == "live line\n"
+    assert body["source"] == "sandbox"
 
 
 def test_get_transcript_parses_json_events_from_the_tail(
@@ -891,6 +991,18 @@ def test_get_transcript_empty_for_an_agent_with_no_json_output(
     body = client.get("/jobs/box-1/transcript").json()
 
     assert body["entries"] == []
+
+
+def test_get_transcript_on_a_gone_sandbox_parses_the_saved_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sbx_module, "run", lambda *a, **k: _completed("", returncode=1))
+    _save_tail("box-gone", json.dumps({"type": "result", "result": "all done"}))
+
+    body = client.get("/jobs/box-gone/transcript").json()
+
+    assert body["source"] == "saved"
+    assert body["entries"] == [{"index": 0, "kind": "result", "text": "all done"}]
 
 
 def test_get_transcript_rejects_tail_out_of_bounds() -> None:

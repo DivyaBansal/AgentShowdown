@@ -131,6 +131,7 @@ export function useJobStream(): JobStream {
     source.addEventListener("job_log", onLog);
     source.addEventListener("run_started", onChange);
     source.addEventListener("run_finished", onChange);
+    source.addEventListener("run_deleted", onChange);
     // The server could not replay far enough back; full refetch is the
     // documented recovery.
     source.addEventListener("resync", onChange);
@@ -143,6 +144,7 @@ export function useJobStream(): JobStream {
       source.removeEventListener("job_log", onLog);
       source.removeEventListener("run_started", onChange);
       source.removeEventListener("run_finished", onChange);
+      source.removeEventListener("run_deleted", onChange);
       source.removeEventListener("resync", onChange);
       source.close();
     };

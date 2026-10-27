@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
+import { formatTimestamp } from "../lib/jobs";
 import { GroupedJobs } from "./GroupedJobs";
 import type { Job } from "../api";
 
@@ -89,6 +90,52 @@ describe("GroupedJobs", () => {
 
     expect(screen.getByLabelText(/box-1/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/box-2/i)).toBeInTheDocument();
+  });
+
+  it("gives each run its start time and a delete button when grouped by run", () => {
+    const startedAt = "2026-10-26T09:30:00+00:00";
+    render(
+      <GroupedJobs
+        jobs={[
+          job({ sandbox_name: "a", run_id: "run-0123456789ab", started_at: startedAt }),
+          job({ sandbox_name: "b", run_id: "run-0123456789ab", started_at: null }),
+        ]}
+        colorFor={() => "c"}
+        onSelect={() => {}}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Delete run" })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/group by/i), { target: { value: "run" } });
+
+    expect(screen.getByText(`Started ${formatTimestamp(startedAt)}`)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete run" })).toBeEnabled();
+  });
+
+  it("won't delete a run that still has a job going", () => {
+    render(
+      <GroupedJobs
+        jobs={[job({ run_id: "run-0123456789ab", status: "running" })]}
+        colorFor={() => "c"}
+        onSelect={() => {}}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/group by/i), { target: { value: "run" } });
+
+    expect(screen.getByRole("button", { name: "Delete run" })).toBeDisabled();
+  });
+
+  it("offers no delete for jobs recorded without a run", () => {
+    render(
+      <GroupedJobs jobs={[job({ run_id: null })]} colorFor={() => "c"} onSelect={() => {}} />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/group by/i), { target: { value: "run" } });
+
+    expect(screen.getByRole("heading", { name: "No run" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete run" })).not.toBeInTheDocument();
   });
 
   it("shows the job count on each group", () => {
