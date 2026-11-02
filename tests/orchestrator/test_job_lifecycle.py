@@ -16,6 +16,17 @@ from backend.orchestrator.process import CommandError
 from backend.orchestrator.state import StateStore
 
 
+@pytest.fixture(autouse=True)
+def _stub_otel_sbx_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stubs the sbx calls made for agents that export OTel.
+
+    `run_job` adds a network rule for the receiver, and finalizing waits for
+    the agent process to exit so its last telemetry batch has landed.
+    """
+    monkeypatch.setattr(lifecycle_module, "sbx_allow_network", lambda name, resource: True)
+    monkeypatch.setattr(finish_module, "sbx_agent_exited", lambda name: True)
+
+
 def _config(tmp_path: Path, **overrides) -> Config:
     defaults = {
         "repo_path": "/tmp/repo",
