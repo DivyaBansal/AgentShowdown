@@ -20,7 +20,7 @@ Don't rely on the hype.</b>
 </p>
 
 > [!NOTE]
-> **Status: alpha (v0.2.0).** Usable day to day, with rough edges. `claude` and
+> **Status: alpha.** Usable day to day, with rough edges. `claude` and
 > `codex` are verified end to end; other agents are best-effort. Only tested on
 > Linux (see [Platform and sizing](#platform-and-sizing)).
 
