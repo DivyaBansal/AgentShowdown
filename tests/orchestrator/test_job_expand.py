@@ -374,6 +374,7 @@ def test_recording_queued_jobs_keeps_what_an_earlier_run_left(tmp_path: Path) ->
         branch="b",
         status="succeeded",
         pr_url="https://example.invalid/pr/1",
+        run_id="run-1",
     )
 
     expand_module.record_queued(config, [(feature, spec)], run_id="run-2")
@@ -381,5 +382,54 @@ def test_recording_queued_jobs_keeps_what_an_earlier_run_left(tmp_path: Path) ->
     job = _job(store, sandbox_name)
     assert job["status"] == "succeeded"
     assert job["pr_url"] == "https://example.invalid/pr/1"
-    # It still belongs to the run that asked for it.
-    assert job["run_id"] == "run-2"
+
+
+@pytest.mark.parametrize("status", ["succeeded", "awaiting_input"])
+def test_a_job_the_rerun_will_skip_stays_in_the_run_that_produced_it(
+    tmp_path: Path, status: str
+) -> None:
+    """Regression: re-running a feature used to re-stamp a finished job with
+    the new run's id, though run_job then skipped it. The run that did the
+    work was left looking empty, and the new one claimed work it never did."""
+    config = _config(tmp_path)
+    spec = AgentSpec(agent_id="claude")
+    feature = _feature()
+    sandbox_name = expand_module.sandbox_name_for(feature.id, spec)
+    store = StateStore(config.state_db_path)
+    store.upsert(
+        sandbox_name, feature_id=feature.id, agent_id="claude", status=status, run_id="run-1"
+    )
+
+    expand_module.record_queued(config, [(feature, spec)], run_id="run-2")
+
+    assert _job(store, sandbox_name)["run_id"] == "run-1"
+
+
+def test_a_job_the_rerun_will_relaunch_moves_to_the_new_run(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    spec = AgentSpec(agent_id="claude")
+    feature = _feature()
+    sandbox_name = expand_module.sandbox_name_for(feature.id, spec)
+    store = StateStore(config.state_db_path)
+    store.upsert(
+        sandbox_name, feature_id=feature.id, agent_id="claude", status="crashed", run_id="run-1"
+    )
+
+    expand_module.record_queued(config, [(feature, spec)], run_id="run-2")
+
+    assert _job(store, sandbox_name)["run_id"] == "run-2"
+
+
+def test_a_queued_job_records_its_kits_so_skill_runs_can_be_told_apart(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path, agent_profiles={"claude": AgentProfile(kit=["./base"])})
+    with_skill = AgentSpec(agent_id="claude", run_label="skill", kit=["./kits/ui"])
+    plain = AgentSpec(agent_id="claude", run_label="plain")
+    feature = _feature([with_skill, plain])
+    store = StateStore(config.state_db_path)
+
+    expand_module.record_queued(config, [(feature, with_skill), (feature, plain)], run_id="r")
+
+    assert _job(store, "arena-f1-claude-skill")["kits"] == '["./base", "./kits/ui"]'
+    assert _job(store, "arena-f1-claude-plain")["kits"] == '["./base"]'

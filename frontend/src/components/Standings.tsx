@@ -15,16 +15,28 @@ import {
   canStop,
   compareNullableAscending,
   elapsedSeconds,
+  endToEndSeconds,
   formatDiff,
   formatDuration,
   formatTimestamp,
+  jobKits,
+  kitName,
   placements,
   statusTone,
   totalTokens,
 } from "../lib/jobs";
 import { StatusChip } from "./ui/StatusChip";
 
-type SortKey = "rank" | "agent" | "started" | "duration" | "tokens" | "diff";
+type SortKey =
+  | "rank"
+  | "agent"
+  | "started"
+  | "duration"
+  | "endToEnd"
+  | "tokens"
+  | "toolCalls"
+  | "requests"
+  | "diff";
 
 interface Column {
   key: SortKey;
@@ -36,8 +48,11 @@ const COLUMNS: Column[] = [
   { key: "rank", label: "Rank", numeric: false },
   { key: "agent", label: "Agent", numeric: false },
   { key: "started", label: "Started", numeric: false },
-  { key: "duration", label: "Duration", numeric: true },
+  { key: "duration", label: "Agent time", numeric: true },
+  { key: "endToEnd", label: "End to end", numeric: true },
   { key: "tokens", label: "Tokens", numeric: true },
+  { key: "toolCalls", label: "Tool calls", numeric: true },
+  { key: "requests", label: "Requests", numeric: true },
   { key: "diff", label: "Lines +/−", numeric: true },
 ];
 
@@ -53,6 +68,49 @@ function startedMs(job: Job): number | null {
   const ms = Date.parse(job.started_at);
 
   return Number.isNaN(ms) ? null : ms;
+}
+
+const NO_DATA = <span className="no-data">—</span>;
+
+/** The kits a job carried, by short name; "none" is a known absence, a
+ *  dash is a row recorded before kits were. */
+function kitsCell(job: Job) {
+  const kits = jobKits(job);
+
+  if (kits === null) return NO_DATA;
+
+  if (kits.length === 0) return <span className="hint">none</span>;
+
+  return <span title={kits.join("\n")}>{kits.map(kitName).join(", ")}</span>;
+}
+
+/** Total tokens, with the input / cached / output split on hover. */
+function tokensCell(job: Job) {
+  const total = totalTokens(job);
+
+  if (total === null) return NO_DATA;
+
+  const parts = [
+    `input ${(job.input_tokens ?? 0).toLocaleString()}`,
+    job.cached_input_tokens === null
+      ? null
+      : `of which cached ${job.cached_input_tokens.toLocaleString()}`,
+    `output ${(job.output_tokens ?? 0).toLocaleString()}`,
+  ].filter((part): part is string => part !== null);
+
+  return <span title={parts.join("\n")}>{total.toLocaleString()}</span>;
+}
+
+function countCell(value: number | null, failures: number | null = null) {
+  if (value === null) return NO_DATA;
+
+  return failures ? (
+    <span title={`${failures} failed`}>
+      {value} <span className="hint">({failures} failed)</span>
+    </span>
+  ) : (
+    value
+  );
 }
 
 function verdict(value: number | null) {
@@ -77,7 +135,10 @@ export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job
   const metric: Record<Exclude<SortKey, "rank" | "agent">, (job: Job) => number | null> = {
     started: startedMs,
     duration: (job) => elapsedSeconds(job, now),
+    endToEnd: endToEndSeconds,
     tokens: totalTokens,
+    toolCalls: (job) => job.tool_calls,
+    requests: (job) => job.model_requests,
     diff: diffSize,
   };
 
@@ -130,6 +191,7 @@ export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job
                 </button>
               </th>
             ))}
+            <th>Skill kit</th>
             <th>Status</th>
             <th>Tests</th>
             <th>Lint</th>
@@ -138,7 +200,6 @@ export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job
         <tbody>
           {rows.map((job) => {
             const place = rank.get(job.sandbox_name) ?? 0;
-            const tokens = totalTokens(job);
 
             return (
               <tr key={job.sandbox_name}>
@@ -156,18 +217,16 @@ export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job
                     {seriesKey(job)}
                   </span>
                 </td>
-                <td className="num">
-                  {formatTimestamp(job.started_at) ?? <span className="no-data">—</span>}
-                </td>
+                <td className="num">{formatTimestamp(job.started_at) ?? NO_DATA}</td>
                 <td className="is-num num">
-                  {formatDuration(elapsedSeconds(job, now)) ?? <span className="no-data">—</span>}
+                  {formatDuration(elapsedSeconds(job, now)) ?? NO_DATA}
                 </td>
-                <td className="is-num num">
-                  {tokens === null ? <span className="no-data">—</span> : tokens.toLocaleString()}
-                </td>
-                <td className="is-num num">
-                  {formatDiff(job) ?? <span className="no-data">—</span>}
-                </td>
+                <td className="is-num num">{formatDuration(endToEndSeconds(job)) ?? NO_DATA}</td>
+                <td className="is-num num">{tokensCell(job)}</td>
+                <td className="is-num num">{countCell(job.tool_calls, job.tool_failures)}</td>
+                <td className="is-num num">{countCell(job.model_requests)}</td>
+                <td className="is-num num">{formatDiff(job) ?? NO_DATA}</td>
+                <td>{kitsCell(job)}</td>
                 <td>
                   <StatusChip tone={statusTone(job.status)}>{job.status}</StatusChip>
                 </td>

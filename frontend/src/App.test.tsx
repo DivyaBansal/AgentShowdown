@@ -33,6 +33,11 @@ const JOB = {
   input_tokens: 900,
   output_tokens: 80,
   num_turns: 4,
+  cached_input_tokens: null,
+  tool_calls: null,
+  tool_failures: null,
+  model_requests: null,
+  kits: null,
 };
 
 /** Routes each endpoint the app loads on mount. */
@@ -94,7 +99,7 @@ describe("App", () => {
     // The table is the accessibility backstop: nothing is gated behind a chart.
     stubApi();
     render(<App />);
-    await waitFor(() => expect(screen.getAllByRole("img").length).toBe(3));
+    await waitFor(() => expect(screen.getAllByRole("img").length).toBe(7));
     expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: /tokens/i })).toBeInTheDocument();
   });

@@ -65,6 +65,40 @@ export function questionOptions(job: Pick<Job, "question_options">): string[] {
   return parsed.filter((item): item is string => typeof item === "string");
 }
 
+/** The sbx kit refs a job ran with, decoded; null when the row predates
+ *  kits being recorded (or the value is malformed), which is "unknown",
+ *  not "none". */
+export function jobKits(job: Pick<Job, "kits">): string[] | null {
+  if (job.kits === null) return null;
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(job.kits);
+  } catch {
+    return null;
+  }
+
+  if (!Array.isArray(parsed)) return null;
+
+  return parsed.filter((item): item is string => typeof item === "string");
+}
+
+/** A kit's short name: the last segment of its path or reference. */
+export function kitName(ref: string): string {
+  const parts = ref.split("/").filter(Boolean);
+
+  return parts[parts.length - 1] ?? ref;
+}
+
+/** Whether a job ran with a kit (which is how a skill is shipped), or null
+ *  when that isn't known. */
+export function usesKit(job: Pick<Job, "kits">): boolean | null {
+  const kits = jobKits(job);
+
+  return kits === null ? null : kits.length > 0;
+}
+
 /** A one-line glance at what a job is doing right now, with no LLM call:
  *  the agent's own status message once it has one, falling back to the
  *  last non-empty line of its live output while it's still working.
@@ -126,6 +160,17 @@ export function elapsedSeconds(
   }
 
   return job.duration_seconds;
+}
+
+/** Launch through push: every phase of the latest attempt, so sandbox
+ *  start-up and verification count too. `duration_seconds` alone is only
+ *  the agent's run. Null until the agent phase has a time. */
+export function endToEndSeconds(
+  job: Pick<Job, "launch_s" | "agent_s" | "verify_s" | "push_s">,
+): number | null {
+  if (job.agent_s === null || job.agent_s === undefined) return null;
+
+  return (job.launch_s ?? 0) + job.agent_s + (job.verify_s ?? 0) + (job.push_s ?? 0);
 }
 
 /** Input + output, or null when neither half was reported. */
@@ -274,9 +319,19 @@ export function groupJobs(jobs: Job[], mode: GroupMode): JobGroup[] {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, list]) => ({
       key: key === "" ? "(none)" : key,
-      label: mode === "run" && key === "" ? "No run" : key,
+      label: mode === "run" ? runLabel(key, list) : key,
       jobs: list,
     }));
+}
+
+/** A run's heading: which feature it ran, since a bare `run-<hex>` says
+ *  nothing about what it was. */
+function runLabel(runId: string, jobs: Job[]): string {
+  if (runId === "") return "No run";
+
+  const features = [...new Set(jobs.map((j) => j.feature_id))].sort();
+
+  return `${features.join(", ")} · ${runId}`;
 }
 
 /** Placement of each job within its own feature, keyed by sandbox name.

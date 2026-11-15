@@ -176,6 +176,30 @@ def test_usage_comes_from_the_events_flushed_on_exit(tmp_path: Path, sandbox: Fa
     assert row["num_turns"] == 2
 
 
+def test_tool_calls_and_requests_are_counted_from_the_events(
+    tmp_path: Path, sandbox: FakeSandbox
+) -> None:
+    config = _config(tmp_path)
+    tool = AgentEventRow(
+        name="claude_code.tool_result",
+        ts=None,
+        attributes={"tool_name": "Bash", "success": "false"},
+    )
+    sandbox.on_exit = _deliver(config, _request(100, 20), tool, tool, _request(50, 5))
+
+    row = _run(config)
+
+    assert (row["tool_calls"], row["tool_failures"], row["model_requests"]) == (2, 2, 2)
+
+
+def test_no_events_leaves_tool_calls_unknown_rather_than_zero(
+    tmp_path: Path, sandbox: FakeSandbox
+) -> None:
+    row = _run(_config(tmp_path))
+
+    assert row["tool_calls"] is None
+
+
 def test_usage_falls_back_to_the_run_log_without_events(
     tmp_path: Path, sandbox: FakeSandbox
 ) -> None:

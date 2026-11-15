@@ -153,10 +153,14 @@
   stroke-linejoin: round;
 }
 
+/* One `minmax(0, 1fr)` column rather than the implicit `auto` one: an auto
+   track grows to its widest child's min-content, so a wide table pushed the
+   whole page past the viewport instead of scrolling inside its .scroll-x. */
 .app-main {
   padding-top: var(--space-5);
   padding-bottom: 64px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
 }
 
@@ -165,6 +169,7 @@
    an author `display` beats the browser's own one for the attribute. */
 .tab-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
 }
 

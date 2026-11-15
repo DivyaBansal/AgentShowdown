@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from pathlib import Path
 
 import pytest
 from backend.orchestrator import state
-from backend.orchestrator.state import StateStore
+from backend.orchestrator.state import AgentEventRow, StateStore
 from backend.orchestrator.telemetry import Sample
 
 
@@ -112,6 +113,50 @@ CREATE TABLE jobs (
     detail TEXT
 )
 """
+
+
+def test_jobs_from_before_event_metrics_are_backfilled_from_their_events(
+    tmp_path: Path,
+) -> None:
+    """Rows recorded before tool calls were stored still have their events,
+    so opening the database counts them -- without reordering the board."""
+    db = str(tmp_path / "s.sqlite3")
+    with StateStore(db) as store:
+        store.upsert("box", feature_id="f1", agent_id="claude", status="succeeded")
+        store.set_spec("box", json.dumps({"agent_id": "claude", "kit": ["./kits/ui"]}))
+        store.add_agent_events(
+            "box",
+            [
+                AgentEventRow(
+                    name="claude_code.api_request",
+                    ts=None,
+                    attributes={"input_tokens": "5", "cache_read_tokens": "95"},
+                ),
+                AgentEventRow(name="claude_code.tool_result", ts=None, attributes={}),
+            ],
+        )
+        before = store.get("box")
+        assert before is not None
+        updated_at = before["updated_at"]
+        # Back to the schema a database had before these columns existed.
+        for ddl in (
+            "ALTER TABLE jobs DROP COLUMN cached_input_tokens",
+            "ALTER TABLE jobs DROP COLUMN tool_calls",
+            "ALTER TABLE jobs DROP COLUMN tool_failures",
+            "ALTER TABLE jobs DROP COLUMN model_requests",
+            "ALTER TABLE jobs DROP COLUMN kits",
+        ):
+            store.conn.execute(ddl)
+        store.conn.commit()
+
+    with StateStore(db) as store:
+        job = store.get("box")
+
+    assert job is not None
+    assert (job["input_tokens"], job["cached_input_tokens"]) == (100, 95)
+    assert (job["tool_calls"], job["tool_failures"], job["model_requests"]) == (1, 0, 1)
+    assert job["kits"] == '["./kits/ui"]'
+    assert job["updated_at"] == updated_at
 
 
 def test_opening_a_legacy_database_adds_the_metric_columns(tmp_path: Path) -> None:

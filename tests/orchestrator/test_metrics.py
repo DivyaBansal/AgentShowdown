@@ -85,3 +85,32 @@ def test_numstat_counts_binary_files_without_line_totals() -> None:
 def test_numstat_ignores_malformed_lines() -> None:
     assert parse_diff_numstat("") == (0, 0, 0)
     assert parse_diff_numstat("garbage\n") == (0, 0, 0)
+
+
+def test_claude_input_includes_cache_reads_and_writes() -> None:
+    """claude reports cache traffic apart from input_tokens; codex counts it
+    inside. Without adding it back, a claude run charts as nearly free."""
+    log = json.dumps(
+        {
+            "type": "result",
+            "usage": {
+                "input_tokens": 36,
+                "cache_read_input_tokens": 500_000,
+                "cache_creation_input_tokens": 40_000,
+                "output_tokens": 9_900,
+            },
+        }
+    )
+
+    usage = parse_usage(log, "claude")
+
+    assert usage.input_tokens == 540_036
+    assert usage.cached_input_tokens == 500_000
+
+
+def test_codex_cached_tokens_are_already_part_of_its_input() -> None:
+    log = '{"type": "turn.completed", "usage": {"input_tokens": 900, "cached_input_tokens": 600}}'
+
+    usage = parse_usage(log, "codex")
+
+    assert (usage.input_tokens, usage.cached_input_tokens) == (900, 600)

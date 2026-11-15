@@ -225,11 +225,13 @@ def _sum(values: Iterable[int | None]) -> int | None:
 def usage_from_events(agent_id: str, events: Iterable[Mapping[str, object]]) -> Usage:
     """Totals token usage across one attempt's OTel events.
 
-    claude's `input_tokens` excludes cache reads and writes, matching what
-    its `--output-format json` result reports, so the two sources agree on
-    what "input" means. Requests from claude's own auxiliary queries are
-    included: they are billed like any other. `num_turns` has no OTel
-    equivalent and is always None here.
+    Input counts cache reads and writes, the same definition
+    `metrics.parse_usage` uses: claude reports them apart from
+    `input_tokens`, so they are added back, while codex's
+    `input_token_count` already includes its `cached_token_count`.
+    Requests from claude's own auxiliary queries are included: they are
+    billed like any other. `num_turns` has no OTel equivalent and is
+    always None here.
 
     Args:
         agent_id: Which CLI produced the events.
@@ -240,6 +242,7 @@ def usage_from_events(agent_id: str, events: Iterable[Mapping[str, object]]) -> 
     """
     inputs: list[int | None] = []
     outputs: list[int | None] = []
+    cached: list[int | None] = []
     for event in events:
         attributes = event.get("attributes")
         if not isinstance(attributes, dict):
@@ -247,14 +250,76 @@ def usage_from_events(agent_id: str, events: Iterable[Mapping[str, object]]) -> 
         if agent_id == "claude":
             if event.get("name") != _CLAUDE_REQUEST_EVENT:
                 continue
-            inputs.append(_as_int(attributes.get("input_tokens")))
+            fresh = _as_int(attributes.get("input_tokens"))
+            read = _as_int(attributes.get("cache_read_tokens"))
+            written = _as_int(attributes.get("cache_creation_tokens"))
+            inputs.append(None if fresh is None else fresh + (read or 0) + (written or 0))
             outputs.append(_as_int(attributes.get("output_tokens")))
+            cached.append(read)
         elif agent_id == "codex":
             if not any(key in attributes for key in _CODEX_TOKEN_KEYS):
                 continue
             inputs.append(_as_int(attributes.get("input_token_count")))
             outputs.append(_as_int(attributes.get("output_token_count")))
-    return Usage(input_tokens=_sum(inputs), output_tokens=_sum(outputs))
+            cached.append(_as_int(attributes.get("cached_token_count")))
+    return Usage(
+        input_tokens=_sum(inputs), output_tokens=_sum(outputs), cached_input_tokens=_sum(cached)
+    )
+
+
+@dataclass(frozen=True)
+class Activity:
+    """How much an agent did in one attempt, counted from its OTel events.
+
+    None means the agent exported no events at all, so nothing is known --
+    distinct from a run that exported events and genuinely made no tool
+    calls, which is a real 0.
+
+    Attributes:
+        tool_calls: Tool invocations that returned a result.
+        tool_failures: The part of `tool_calls` that reported failure.
+        model_requests: Completed model requests (one per round trip).
+    """
+
+    tool_calls: int | None = None
+    tool_failures: int | None = None
+    model_requests: int | None = None
+
+
+def activity_from_events(agent_id: str, events: Iterable[Mapping[str, object]]) -> Activity:
+    """Counts tool calls and model requests across one attempt's OTel events.
+
+    A model request is counted where its token usage is: claude's
+    `api_request` event, and for codex whichever event carries the token
+    counts, so the two agents' request counts mean the same thing.
+
+    Args:
+        agent_id: Which CLI produced the events.
+        events: Stored events, each with "name" and "attributes".
+
+    Returns:
+        The counts; every field None when there were no events.
+    """
+    tool_calls = tool_failures = model_requests = 0
+    seen = False
+    for event in events:
+        seen = True
+        name = str(event.get("name") or "")
+        attributes = event.get("attributes")
+        attributes = attributes if isinstance(attributes, dict) else {}
+        if name.endswith(".tool_result"):
+            tool_calls += 1
+            if str(attributes.get("success")).lower() == "false":
+                tool_failures += 1
+        elif agent_id == "claude" and name == _CLAUDE_REQUEST_EVENT:
+            model_requests += 1
+        elif agent_id == "codex" and any(key in attributes for key in _CODEX_TOKEN_KEYS):
+            model_requests += 1
+    if not seen:
+        return Activity()
+    return Activity(
+        tool_calls=tool_calls, tool_failures=tool_failures, model_requests=model_requests
+    )
 
 
 def prefer_otel_usage(otel: Usage, from_log: Usage) -> Usage:
@@ -273,6 +338,11 @@ def prefer_otel_usage(otel: Usage, from_log: Usage) -> Usage:
             otel.output_tokens if otel.output_tokens is not None else from_log.output_tokens
         ),
         num_turns=otel.num_turns if otel.num_turns is not None else from_log.num_turns,
+        cached_input_tokens=(
+            otel.cached_input_tokens
+            if otel.cached_input_tokens is not None
+            else from_log.cached_input_tokens
+        ),
     )
 
 

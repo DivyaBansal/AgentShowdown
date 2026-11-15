@@ -32,6 +32,11 @@ function job(overrides: Partial<Job> = {}): Job {
     input_tokens: 500,
     output_tokens: 100,
     num_turns: 3,
+    cached_input_tokens: null,
+    tool_calls: null,
+    tool_failures: null,
+    model_requests: null,
+    kits: null,
     repo: null,
     log_tail: null,
     launch_s: null,
@@ -50,10 +55,16 @@ describe("ComparisonSpread", () => {
     // scales (or two y-axes) would make them incomparable.
     render(<ComparisonSpread jobs={[job(), job({ agent_id: "codex" })]} />);
     const charts = screen.getAllByRole("img");
-    expect(charts).toHaveLength(3);
-    expect(charts.map((c) => c.getAttribute("aria-label")).join(" ")).toMatch(
-      /duration.*|tokens.*|diff/i,
-    );
+    const titles = charts.map((c) => c.getAttribute("aria-label")?.split(".")[0]);
+    expect(titles).toEqual([
+      "Agent time",
+      "End to end",
+      "Tokens used",
+      "Output tokens",
+      "Tool calls",
+      "Model requests",
+      "Diff size",
+    ]);
   });
 
   it("includes a legend once there are two or more series", () => {
@@ -84,7 +95,7 @@ describe("ComparisonSpread", () => {
 
     const durationChart = screen
       .getAllByRole("img")
-      .find((c) => c.getAttribute("aria-label")?.includes("duration"));
+      .find((c) => c.getAttribute("aria-label")?.startsWith("Agent time"));
 
     expect(durationChart?.getAttribute("aria-label")).toContain("claude");
   });
@@ -115,7 +126,7 @@ describe("ComparisonSpread", () => {
     );
 
     const duration = () =>
-      screen.getAllByRole("img").find((c) => c.getAttribute("aria-label")?.includes("duration"));
+      screen.getAllByRole("img").find((c) => c.getAttribute("aria-label")?.startsWith("Agent time"));
 
     expect(screen.getByLabelText("Feature")).toHaveValue("new");
     expect(duration()?.getAttribute("aria-label")).toContain("claude");
@@ -127,7 +138,7 @@ describe("ComparisonSpread", () => {
     expect(duration()?.getAttribute("aria-label")).not.toContain("claude");
   });
 
-  it("labels each bar with agent and model, or the user's run label", () => {
+  it("keys colour by agent and model, and names the run label on the bar", () => {
     render(
       <ComparisonSpread
         jobs={[
@@ -139,7 +150,84 @@ describe("ComparisonSpread", () => {
     const legend = screen.getByRole("list");
 
     expect(within(legend).getByText("claude · sonnet")).toBeInTheDocument();
-    expect(within(legend).getByText("codex · luna")).toBeInTheDocument();
+    expect(within(legend).getByText("codex · gpt-5")).toBeInTheDocument();
+    // Model on the first line of the bar label, agent and run label below.
+    expect(screen.getAllByText("gpt-5", { selector: "text" })).toHaveLength(7);
+    expect(screen.getAllByText("codex · luna", { selector: "text" })).toHaveLength(7);
+  });
+
+  it("hatches skill-kit runs and keys the texture once both kinds are shown", () => {
+    const { container } = render(
+      <ComparisonSpread
+        jobs={[
+          job({ model: "haiku", run_label: "plain", kits: "[]" }),
+          job({ model: "haiku", run_label: "with-skill", kits: '["./kits/ui"]' }),
+        ]}
+      />,
+    );
+
+    const legend = screen.getByRole("list");
+
+    expect(within(legend).getByText("with skill kit")).toBeInTheDocument();
+    expect(within(legend).getByText("no skill kit")).toBeInTheDocument();
+    // One hatch on the with-skill row of each chart it has data for; the
+    // fixture reports no agent time, tool calls or requests, which draw
+    // "no data" and so no bar.
+    expect(container.querySelectorAll("pattern")).toHaveLength(4);
+    expect(
+      screen
+        .getAllByRole("img")[0]
+        ?.getAttribute("aria-label"),
+    ).toContain("claude · haiku · with-skill (skill kit)");
+  });
+
+  it("leaves out the texture key when every run is plain", () => {
+    render(<ComparisonSpread jobs={[job({ kits: "[]" }), job({ agent_id: "codex", kits: "[]" })]} />);
+
+    expect(screen.queryByText("with skill kit")).not.toBeInTheDocument();
+  });
+
+  it("puts each plain / with-skill pair on adjacent rows", () => {
+    render(
+      <ComparisonSpread
+        jobs={[
+          job({ model: "sonnet", run_label: "with-skill", kits: '["k"]' }),
+          job({ model: "haiku", run_label: "with-skill", kits: '["k"]' }),
+          job({ model: "sonnet", run_label: "plain", kits: "[]" }),
+          job({ model: "haiku", run_label: "plain", kits: "[]" }),
+        ]}
+      />,
+    );
+
+    const order = screen
+      .getAllByRole("img")[0]
+      ?.getAttribute("aria-label")
+      ?.split(". ")[1]
+      ?.split("; ")
+      .map((entry) => entry.split(":")[0]);
+
+    expect(order).toEqual([
+      "claude · haiku · plain",
+      "claude · haiku · with-skill (skill kit)",
+      "claude · sonnet · plain",
+      "claude · sonnet · with-skill (skill kit)",
+    ]);
+  });
+
+  it("charts tool calls, showing no data rather than zero when unreported", () => {
+    render(
+      <ComparisonSpread
+        jobs={[job({ tool_calls: 42 }), job({ agent_id: "cursor", tool_calls: null })]}
+      />,
+    );
+
+    const toolChart = screen
+      .getAllByRole("img")
+      .find((c) => c.getAttribute("aria-label")?.startsWith("Tool calls"));
+
+    expect(toolChart?.getAttribute("aria-label")).toBe(
+      "Tool calls. claude: 42; cursor: no data",
+    );
   });
 
   it("gives repeat runs of one series their own row instead of stacking them", () => {
@@ -154,10 +242,24 @@ describe("ComparisonSpread", () => {
       />,
     );
 
-    expect(screen.getAllByText("claude #1", { selector: "text" })).toHaveLength(3);
-    expect(screen.getAllByText("claude #2", { selector: "text" })).toHaveLength(3);
+    expect(screen.getAllByText("claude #1", { selector: "text" })).toHaveLength(7);
+    expect(screen.getAllByText("claude #2", { selector: "text" })).toHaveLength(7);
     expect(screen.getByText("10.0s")).toBeInTheDocument();
     expect(screen.getByText("20.0s")).toBeInTheDocument();
+  });
+
+  it("keeps the part that tells two models apart visible", () => {
+    render(
+      <ComparisonSpread
+        jobs={[
+          job({ model: "claude-sonnet-5" }),
+          job({ model: "claude-sonnet-6" }),
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("claude-sonnet-5", { selector: "text" })).toHaveLength(7);
+    expect(screen.getAllByText("claude-sonnet-6", { selector: "text" })).toHaveLength(7);
   });
 
   it("shortens a long label but keeps the full text available", () => {
@@ -166,8 +268,8 @@ describe("ComparisonSpread", () => {
     );
 
     expect(container.querySelector("title")?.textContent).toBe(
-      "claude · claude-sonnet-4-5-20250929",
+      "claude · claude-sonnet-4-5-20250929: 1m 40s",
     );
-    expect(screen.getAllByText(/^claude · claude-son.*…$/).length).toBe(3);
+    expect(screen.getAllByText(/^claude-sonnet-4-5-20.*…$/).length).toBe(7);
   });
 });

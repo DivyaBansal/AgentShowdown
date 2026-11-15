@@ -101,6 +101,21 @@ table.standings {
   flex: none;
 }
 
+/* The texture key: neutral ink, since texture (not hue) is what it names --
+   matching the 45° hatch the charts draw on a skill-kit run. */
+.swatch--solid-key {
+  background: var(--text-2);
+}
+
+.swatch--hatched {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--text-2) 0 2px,
+    transparent 2px 4px
+  );
+  box-shadow: inset 0 0 0 1px var(--text-2);
+}
+
 .verdict--pass { color: var(--ok-ink); }
 .verdict--fail { color: var(--danger-ink); }
 

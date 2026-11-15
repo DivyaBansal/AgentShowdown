@@ -1,20 +1,24 @@
 /** The comparison: one horizontal bar chart per metric.
  *
- * Small multiples rather than one chart, because duration, tokens and diff
- * size are different units on wildly different scales. Putting them on a
- * shared axis would make them incomparable; putting them on two y-axes
- * would be worse still.
+ * Small multiples rather than one chart, because duration, tokens, tool
+ * calls and diff size are different units on wildly different scales.
+ * Putting them on a shared axis would make them incomparable; putting them
+ * on two y-axes would be worse still.
  *
  * A metric the agent never reported renders as "no data", never as a
  * zero-length bar -- a false zero would make an agent look instant, or free.
  *
  * Only one feature is charted at a time: bars for different tasks measure
  * different work, so putting them side by side would compare nothing.
+ *
+ * Colour is the agent and model; a hatched bar is a run that carried a
+ * skill kit. Rows are ordered so each plain / with-skill pair sits together.
  */
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { Job } from "../api";
-import { assignSeriesColorsFor, seriesKey } from "./palette";
+import { endToEndSeconds, totalTokens, usesKit } from "../lib/jobs";
+import { assignSeriesColorsFor, colorKey, seriesKey } from "./palette";
 
 interface Metric {
   key: string;
@@ -24,23 +28,58 @@ interface Metric {
   format: (value: number) => string;
 }
 
+function formatSeconds(v: number): string {
+  return v >= 60 ? `${Math.floor(v / 60)}m ${Math.round(v % 60)}s` : `${v.toFixed(1)}s`;
+}
+
+function formatCount(v: number): string {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+
+  return v >= 1000 ? `${(v / 1000).toFixed(1)}K` : `${v}`;
+}
+
 const METRICS: Metric[] = [
   {
     key: "duration",
-    title: "Wall-clock duration",
-    unit: "seconds, lower is better",
+    title: "Agent time",
+    unit: "the agent working, launch to exit; lower is better",
     value: (j) => j.duration_seconds,
-    format: (v) => (v >= 60 ? `${Math.floor(v / 60)}m ${Math.round(v % 60)}s` : `${v.toFixed(1)}s`),
+    format: formatSeconds,
+  },
+  {
+    key: "end-to-end",
+    title: "End to end",
+    unit: "sandbox start + agent + verify + push",
+    value: endToEndSeconds,
+    format: formatSeconds,
   },
   {
     key: "tokens",
     title: "Tokens used",
-    unit: "input + output; only claude and codex report this",
-    value: (j) =>
-      j.input_tokens === null && j.output_tokens === null
-        ? null
-        : (j.input_tokens ?? 0) + (j.output_tokens ?? 0),
-    format: (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}K` : `${v}`),
+    unit: "input (incl. prompt cache) + output; claude and codex only",
+    value: totalTokens,
+    format: formatCount,
+  },
+  {
+    key: "output-tokens",
+    title: "Output tokens",
+    unit: "tokens the model generated",
+    value: (j) => j.output_tokens,
+    format: formatCount,
+  },
+  {
+    key: "tool-calls",
+    title: "Tool calls",
+    unit: "from the agent's telemetry; claude and codex only",
+    value: (j) => j.tool_calls,
+    format: (v) => `${v}`,
+  },
+  {
+    key: "model-requests",
+    title: "Model requests",
+    unit: "round trips to the model",
+    value: (j) => j.model_requests,
+    format: (v) => `${v}`,
   },
   {
     key: "diff",
@@ -54,34 +93,58 @@ const METRICS: Metric[] = [
   },
 ];
 
-const LABEL_W = 132;
-const VALUE_W = 56;
-const CHART_W = 360;
+// Close to the width a card actually renders at (see .chart-grid), so the
+// SVG draws near 1:1 and its 11px text stays 11px.
+const LABEL_W = 140;
+const VALUE_W = 48;
+const CHART_W = 320;
 const BAR_H = 18;
 
 // At 11px a character averages ~6px; past this a label would run into the
 // baseline, so it is cut with an ellipsis and the full text kept in <title>.
-const LABEL_MAX_CHARS = 20;
+const LABEL_MAX_CHARS = 22;
 
 // >= 2px of surface between adjacent bars; the gap is what separates them,
-// never a stroke drawn around the mark.
-const BAR_GAP = 10;
+// never a stroke drawn around the mark. Wide enough for a two-line label.
+const BAR_GAP = 14;
 const TOP_PAD = 6;
+
+/** How a row is named: the model on top, since it is what most often tells
+ *  rows apart and a cut-off "claude · claude-sonne…" would hide exactly
+ *  that; then the agent and run label; and the whole thing for <title>. */
+interface RowLabel {
+  primary: string;
+  secondary: string | null;
+  full: string;
+}
 
 interface Row {
   id: string;
-  label: string;
+  label: RowLabel;
   value: number | null;
   color: string;
+  hatched: boolean;
 }
 
 function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
-/** One bar label per job. Two runs of the same series get "#1", "#2" in
+/** Plain runs before kit runs, then by name and launch order, grouped by
+ *  colour -- so each pair being compared sits on adjacent rows. */
+function orderRows(jobs: Job[]): Job[] {
+  return [...jobs].sort(
+    (a, b) =>
+      colorKey(a).localeCompare(colorKey(b)) ||
+      Number(usesKit(a) ?? false) - Number(usesKit(b) ?? false) ||
+      seriesKey(a).localeCompare(seriesKey(b)) ||
+      a.created_at.localeCompare(b.created_at),
+  );
+}
+
+/** One label per job. Two runs of the same series get "#1", "#2" in
  *  launch order, so rows never share a label. */
-function rowLabels(jobs: Job[]): Map<string, string> {
+function rowLabels(jobs: Job[]): Map<string, RowLabel> {
   const bySeries = new Map<string, Job[]>();
 
   for (const job of jobs) {
@@ -90,44 +153,38 @@ function rowLabels(jobs: Job[]): Map<string, string> {
     bySeries.set(seriesKey(job), list);
   }
 
-  const labels = new Map<string, string>();
+  const labels = new Map<string, RowLabel>();
 
   for (const [key, list] of bySeries) {
     const ordered = [...list].sort((a, b) => a.created_at.localeCompare(b.created_at));
     ordered.forEach((job, index) => {
-      labels.set(job.sandbox_name, list.length > 1 ? `${key} #${index + 1}` : key);
+      const repeat = list.length > 1 ? ` #${index + 1}` : "";
+      const base = colorKey(job);
+      const qualifier = key === base ? null : key.slice(base.length + " · ".length);
+      const kit = usesKit(job) ? " (skill kit)" : "";
+      const primary = job.model ?? job.agent_id;
+      const rest = [job.model ? job.agent_id : null, qualifier].filter((part) => part !== null);
+      const secondary = rest.length > 0 ? rest.join(" · ") : null;
+
+      labels.set(job.sandbox_name, {
+        primary: secondary === null ? primary + repeat : primary,
+        secondary: secondary === null ? null : secondary + repeat,
+        full: key + repeat + kit,
+      });
     });
   }
 
   return labels;
 }
 
-function MetricChart({
-  metric,
-  jobs,
-  labels,
-  colorFor,
-}: {
-  metric: Metric;
-  jobs: Job[];
-  labels: Map<string, string>;
-  colorFor: (job: Job) => string;
-}) {
-  // Keyed by sandbox name, never by label: two jobs of one series used to
-  // collide on the key, and React drew both rows on top of each other.
-  const rows: Row[] = jobs.map((job) => ({
-    id: job.sandbox_name,
-    label: labels.get(job.sandbox_name) ?? seriesKey(job),
-    value: metric.value(job),
-    color: colorFor(job),
-  }));
-
+function MetricChart({ metric, rows }: { metric: Metric; rows: Row[] }) {
+  const patternBase = useId();
   const max = Math.max(...rows.map((r) => r.value ?? 0), 0);
   const plotW = CHART_W - LABEL_W - VALUE_W;
   const height = TOP_PAD * 2 + rows.length * (BAR_H + BAR_GAP);
 
   const summary = rows
-    .map((r) => `${r.label}: ${r.value === null ? "no data" : metric.format(r.value)}`)
+    .map((r) => `${r.label.full}: ${r.value === null ? "no data" : metric.format(r.value)}`)
     .join("; ");
 
   return (
@@ -137,7 +194,9 @@ function MetricChart({
       <svg
         viewBox={`0 0 ${CHART_W} ${height}`}
         width="100%"
-        height={height}
+        // Height follows the width, so a narrower card scales the whole
+        // drawing instead of letterboxing it inside a fixed-height box.
+        style={{ height: "auto", maxWidth: CHART_W * 1.25 }}
         role="img"
         aria-label={`${metric.title}. ${summary}`}
       >
@@ -153,24 +212,42 @@ function MetricChart({
         {rows.map((row, i) => {
           const y = TOP_PAD + i * (BAR_H + BAR_GAP);
           const width = max > 0 && row.value !== null ? (row.value / max) * plotW : 0;
+          const patternId = `${patternBase}-hatch-${i}`;
+          const mid = y + BAR_H / 2;
+          const value = row.value === null ? "no data" : metric.format(row.value);
 
           return (
             <g key={row.id}>
+              {/* The hover layer: the whole row, not just the bar, so a
+                  short bar is still easy to point at. */}
+              <title>{`${row.label.full}: ${value}`}</title>
+              <rect x={0} y={y - BAR_GAP / 2} width={CHART_W} height={BAR_H + BAR_GAP} fill="transparent" />
               <text
                 x={LABEL_W - 8}
-                y={y + BAR_H / 2}
+                y={row.label.secondary === null ? mid : mid - 6}
                 textAnchor="end"
                 dominantBaseline="central"
                 fontSize="11"
                 fill="var(--text-2)"
               >
-                <title>{row.label}</title>
-                {truncate(row.label, LABEL_MAX_CHARS)}
+                {truncate(row.label.primary, LABEL_MAX_CHARS)}
               </text>
+              {row.label.secondary !== null && (
+                <text
+                  x={LABEL_W - 8}
+                  y={mid + 7}
+                  textAnchor="end"
+                  dominantBaseline="central"
+                  fontSize="10"
+                  fill="var(--text-3)"
+                >
+                  {truncate(row.label.secondary, LABEL_MAX_CHARS)}
+                </text>
+              )}
               {row.value === null ? (
                 <text
                   x={LABEL_W + 6}
-                  y={y + BAR_H / 2}
+                  y={mid}
                   dominantBaseline="central"
                   fontSize="11"
                   fill="var(--text-3)"
@@ -180,10 +257,29 @@ function MetricChart({
                 </text>
               ) : (
                 <>
+                  {row.hatched && (
+                    // 45° texture in the series' own hue: the second
+                    // encoding that marks a skill-kit run without a new
+                    // colour, and survives greyscale printing.
+                    <defs>
+                      <pattern
+                        id={patternId}
+                        patternUnits="userSpaceOnUse"
+                        width="6"
+                        height="6"
+                        patternTransform="rotate(45)"
+                      >
+                        <rect width="6" height="6" fill={row.color} />
+                        <line x1="0" y1="0" x2="0" y2="6" stroke="var(--surface)" strokeWidth="2.5" />
+                      </pattern>
+                    </defs>
+                  )}
                   {/* Square at the baseline, 4px rounded at the data end. */}
                   <path
                     d={roundedBar(LABEL_W, y, Math.max(width, 2), BAR_H)}
-                    fill={row.color}
+                    fill={row.hatched ? `url(#${patternId})` : row.color}
+                    stroke={row.hatched ? row.color : undefined}
+                    strokeWidth={row.hatched ? 1 : undefined}
                   />
                   {/* Direct label at the tip. Every bar carries one: the
                       light-mode aqua slot sits below 3:1 on this surface, so
@@ -191,12 +287,12 @@ function MetricChart({
                       text token, never the series colour. */}
                   <text
                     x={LABEL_W + Math.max(width, 2) + 6}
-                    y={y + BAR_H / 2}
+                    y={mid}
                     dominantBaseline="central"
                     fontSize="11"
                     fill="var(--text)"
                   >
-                    {metric.format(row.value)}
+                    {value}
                   </text>
                 </>
               )}
@@ -252,13 +348,17 @@ export function ComparisonSpread({
   // A pick that has since vanished (e.g. filtered out by repo) falls back
   // rather than rendering an empty chart.
   const feature = picked !== null && features.includes(picked) ? picked : latestFeature(jobs);
-  const shown = jobs.filter((j) => j.feature_id === feature);
+  const shown = orderRows(jobs.filter((j) => j.feature_id === feature));
   const color = colorFor ?? assignSeriesColorsFor(jobs);
   const labels = rowLabels(shown);
 
   const legend = new Map<string, string>();
 
-  for (const job of shown) legend.set(seriesKey(job), color(job));
+  for (const job of shown) legend.set(colorKey(job), color(job));
+
+  // The texture key only earns its place when both kinds of run are shown.
+  const kitKinds = new Set(shown.map((j) => usesKit(j) ?? false));
+  const showTextureKey = kitKinds.size > 1;
 
   return (
     <div className="stack stack--tight">
@@ -278,7 +378,7 @@ export function ComparisonSpread({
       </div>
       {/* A legend is always present for two or more series: identity must
           never rest on colour matching alone. */}
-      {legend.size > 1 && (
+      {(legend.size > 1 || showTextureKey) && (
         <ul className="legend">
           {[...legend.entries()].map(([key, swatch]) => (
             <li key={key}>
@@ -286,6 +386,18 @@ export function ComparisonSpread({
               {key}
             </li>
           ))}
+          {showTextureKey && (
+            <>
+              <li>
+                <span className="swatch swatch--solid-key" aria-hidden="true" />
+                no skill kit
+              </li>
+              <li>
+                <span className="swatch swatch--hatched" aria-hidden="true" />
+                with skill kit
+              </li>
+            </>
+          )}
         </ul>
       )}
       <div className="chart-grid">
@@ -293,9 +405,18 @@ export function ComparisonSpread({
           <MetricChart
             key={metric.key}
             metric={metric}
-            jobs={shown}
-            labels={labels}
-            colorFor={color}
+            rows={shown.map((job) => ({
+              id: job.sandbox_name,
+              label: labels.get(job.sandbox_name) ?? {
+                primary: seriesKey(job),
+                secondary: null,
+                full: seriesKey(job),
+              },
+              // `??` also catches a field an older server never sent.
+              value: metric.value(job) ?? null,
+              color: color(job),
+              hatched: usesKit(job) ?? false,
+            }))}
           />
         ))}
       </div>

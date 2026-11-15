@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from backend.orchestrator.agent_otel import activity_from_events, usage_from_events
 from backend.orchestrator.events import bus
 
 if TYPE_CHECKING:
@@ -75,6 +76,11 @@ _WRITABLE_COLUMNS: tuple[str, ...] = (
     "push_s",
     "failure_category",
     "question_options",
+    "cached_input_tokens",
+    "tool_calls",
+    "tool_failures",
+    "model_requests",
+    "kits",
 )
 
 # Why a job failed, as a fixed vocabulary rather than the free-text
@@ -139,7 +145,27 @@ _MIGRATIONS: tuple[tuple[str, str], ...] = (
     # JSON-encoded list of strings: the choices an awaiting_input agent
     # offered alongside its question, if any.
     ("question_options", "ALTER TABLE jobs ADD COLUMN question_options TEXT"),
+    ("cached_input_tokens", "ALTER TABLE jobs ADD COLUMN cached_input_tokens INTEGER"),
+    ("tool_calls", "ALTER TABLE jobs ADD COLUMN tool_calls INTEGER"),
+    ("tool_failures", "ALTER TABLE jobs ADD COLUMN tool_failures INTEGER"),
+    ("model_requests", "ALTER TABLE jobs ADD COLUMN model_requests INTEGER"),
+    # JSON-encoded list of the sbx kit refs the job was launched with -- how
+    # a with-skill run is told apart from a plain one. Unlike the full spec
+    # (see job_specs) a kit ref is a path, never a secret.
+    ("kits", "ALTER TABLE jobs ADD COLUMN kits TEXT"),
 )
+
+# Columns whose values `_backfill_event_metrics` can derive for rows that
+# predate them. Fields already measured on the host stay as recorded.
+_BACKFILL_SQL = """
+    UPDATE jobs SET
+        input_tokens = COALESCE(?, input_tokens),
+        cached_input_tokens = ?,
+        tool_calls = ?,
+        tool_failures = ?,
+        model_requests = ?
+    WHERE sandbox_name = ?
+"""
 
 # One fully static statement -- no identifier is ever interpolated into SQL.
 # `upsert` merges the caller's fields onto the existing row in Python and
@@ -177,12 +203,17 @@ _UPSERT_SQL = """
         push_s,
         failure_category,
         question_options,
+        cached_input_tokens,
+        tool_calls,
+        tool_failures,
+        model_requests,
+        kits,
         created_at,
         updated_at
     )
     VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?
+        ?, ?, ?, ?, ?, ?
     )
     ON CONFLICT(sandbox_name) DO UPDATE SET
         feature_id = excluded.feature_id,
@@ -214,6 +245,11 @@ _UPSERT_SQL = """
         push_s = excluded.push_s,
         failure_category = excluded.failure_category,
         question_options = excluded.question_options,
+        cached_input_tokens = excluded.cached_input_tokens,
+        tool_calls = excluded.tool_calls,
+        tool_failures = excluded.tool_failures,
+        model_requests = excluded.model_requests,
+        kits = excluded.kits,
         updated_at = excluded.updated_at
 """
 
@@ -334,6 +370,46 @@ class StateStore:
         for column, ddl in _MIGRATIONS:
             if column not in present:
                 self.conn.execute(ddl)
+        if "tool_calls" not in present:
+            self._backfill_event_metrics()
+
+    def _backfill_event_metrics(self) -> None:
+        """Fills the event-derived columns for jobs recorded before them.
+
+        Runs once, in the open that adds the columns. The agent events those
+        jobs exported are still stored, so tool calls, request counts and
+        cache-inclusive input tokens can be counted the same way
+        `finish._finalize_success` now counts them for a new job. The kit
+        list comes from the recorded spec. `updated_at` is left alone so the
+        board's ordering doesn't change.
+        """
+        for name, agent_id in self.conn.execute(
+            "SELECT sandbox_name, agent_id FROM jobs"
+        ).fetchall():
+            spec = self.get_spec(name)
+            if spec is not None:
+                kits = json.loads(spec).get("kit")
+                if isinstance(kits, list):
+                    self.conn.execute(
+                        "UPDATE jobs SET kits = ? WHERE sandbox_name = ?",
+                        (json.dumps(kits), name),
+                    )
+            events = self.get_agent_events(name, since=self.get_agent_launched_at(name))
+            if not events:
+                continue
+            usage = usage_from_events(agent_id, events)
+            activity = activity_from_events(agent_id, events)
+            self.conn.execute(
+                _BACKFILL_SQL,
+                (
+                    usage.input_tokens,
+                    usage.cached_input_tokens,
+                    activity.tool_calls,
+                    activity.tool_failures,
+                    activity.model_requests,
+                    name,
+                ),
+            )
 
     def upsert(self, sandbox_name: str, **fields: object) -> None:
         """Inserts or updates a job row.
