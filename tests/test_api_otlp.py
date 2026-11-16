@@ -294,3 +294,72 @@ def test_agent_events_come_with_a_readable_timeline() -> None:
     assert [t["seq"] for t in timeline] == [0, 1]
     assert timeline[1]["ok"] is True
     assert timeline[1]["duration_ms"] == 40
+
+
+# --- approach ----------------------------------------------------------------
+
+
+def test_the_approach_sorts_codex_shell_calls_into_phases() -> None:
+    _post(
+        _codex_export(
+            _codex_record("codex.user_prompt", **{"event.timestamp": "2026-10-22T08:00:00Z"}),
+            _codex_record(
+                "codex.tool_result",
+                tool_name="exec_command",
+                success="true",
+                arguments='{"cmd": "rg -n separable src/"}',
+                **{"event.timestamp": "2026-10-22T08:00:05Z"},
+            ),
+            _codex_record(
+                "codex.tool_result",
+                tool_name="apply_patch",
+                success="true",
+                arguments='{"input": "*** Begin Patch\\n*** Update File: src/verbs.py\\n"}',
+                **{"event.timestamp": "2026-10-22T08:00:20Z"},
+            ),
+            _codex_record(
+                "codex.tool_result",
+                tool_name="exec_command",
+                success="false",
+                arguments='{"cmd": "uv run pytest -q"}',
+                **{"event.timestamp": "2026-10-22T08:00:30Z"},
+            ),
+        )
+    )
+
+    body = client.get(f"/jobs/{SANDBOX}/approach").json()
+
+    assert [s["phase"] for s in body["steps"]] == ["explore", "edit", "verify"]
+    assert [s["offset_s"] for s in body["steps"]] == [5.0, 20.0, 30.0]
+    assert body["stats"]["files_edited"] == ["src/verbs.py"]
+    assert body["stats"]["calls_before_first_edit"] == 1
+    assert body["stats"]["edit_verify_cycles"] == 1
+    assert body["stats"]["failures"] == 1
+    assert body["phases"][0] == "explore"
+
+
+def test_the_approach_covers_only_the_latest_turn_by_default() -> None:
+    _post(_codex_export(_codex_record("codex.tool_result", tool_name="shell")))
+    with StateStore(load_config().state_db_path) as store:
+        store.set_agent_launched_at(SANDBOX, "9999-01-01T00:00:00+00:00")
+
+    latest = client.get(f"/jobs/{SANDBOX}/approach").json()
+    every = client.get(f"/jobs/{SANDBOX}/approach", params={"latest_turn": False}).json()
+
+    assert latest["steps"] == []
+    assert len(every["steps"]) == 1
+
+
+@pytest.mark.parametrize("limit", [0, 5001, "many"])
+def test_approach_limit_is_validated(limit: object) -> None:
+    response = client.get(f"/jobs/{SANDBOX}/approach", params={"limit": limit})
+
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+def test_a_job_with_no_events_has_an_empty_approach() -> None:
+    body = client.get("/jobs/nobody/approach").json()
+
+    assert body["steps"] == []
+    assert body["stats"]["calls"] == 0
+    assert body["stats"]["calls_before_first_edit"] is None

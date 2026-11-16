@@ -253,6 +253,63 @@ export async function fetchAgentEvents(sandboxName: string): Promise<AgentEvents
   return { timeline: body.timeline, summary: body.summary };
 }
 
+/** What a tool call did, judged from the tool and, for shell tools, the
+ *  command it ran (see the backend's orchestrator/approach). */
+export type Phase =
+  | "explore"
+  | "edit"
+  | "verify"
+  | "setup"
+  | "git"
+  | "web"
+  | "delegate"
+  | "other";
+
+/** One tool call, placed on the job's clock. */
+export interface ApproachStep {
+  /** Position among the job's tool calls, 0-based. */
+  index: number;
+  /** Seconds since the job's first event; null when no time was sent. */
+  offset_s: number | null;
+  phase: Phase;
+  /** The tool's own name, e.g. "Bash" or "exec_command". */
+  tool: string;
+  /** What it acted on (a command, a file), cut to one line. */
+  target: string | null;
+  ok: boolean | null;
+  duration_ms: number | null;
+}
+
+export interface ApproachStats {
+  calls: number;
+  failures: number;
+  phase_calls: Record<Phase, number>;
+  phase_ms: Record<Phase, number>;
+  /** Null when the agent never edited anything. */
+  calls_before_first_edit: number | null;
+  seconds_to_first_edit: number | null;
+  seconds_to_first_verify: number | null;
+  /** Times it edited, then ran tests, lint or a build. */
+  edit_verify_cycles: number;
+  files_read: string[];
+  files_edited: string[];
+  /** Seconds from the first event to the last tool call. */
+  span_s: number | null;
+}
+
+export interface Approach {
+  phases: Phase[];
+  steps: ApproachStep[];
+  stats: ApproachStats;
+}
+
+/** How a job went about its task: its tool calls sorted into phases, plus
+ *  stats drawn from them. Only the current turn. Empty for agents that
+ *  export no telemetry. */
+export async function fetchApproach(sandboxName: string): Promise<Approach> {
+  return request<Approach>(`/jobs/${encodeURIComponent(sandboxName)}/approach`);
+}
+
 export async function fetchSandboxes(): Promise<SandboxSummary[]> {
   return (await request<{ sandboxes: SandboxSummary[] }>("/sandboxes")).sandboxes;
 }

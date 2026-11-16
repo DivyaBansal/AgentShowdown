@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import quote, urlsplit
 
+from backend.orchestrator.approach import is_wrapper_event
 from backend.orchestrator.metrics import Usage
 
 if TYPE_CHECKING:
@@ -308,6 +309,8 @@ def activity_from_events(agent_id: str, events: Iterable[Mapping[str, object]]) 
         attributes = event.get("attributes")
         attributes = attributes if isinstance(attributes, dict) else {}
         if name.endswith(".tool_result"):
+            if is_wrapper_event(attributes):
+                continue
             tool_calls += 1
             if str(attributes.get("success")).lower() == "false":
                 tool_failures += 1
@@ -369,7 +372,7 @@ def summarize_events(events: Iterable[Mapping[str, object]]) -> dict[str, object
         event_cost = _as_float(attributes.get("cost_usd"))
         if event_cost is not None:
             cost = (cost or 0.0) + event_cost
-        if name.endswith(".tool_result"):
+        if name.endswith(".tool_result") and not is_wrapper_event(attributes):
             tool = str(attributes.get("tool_name") or attributes.get("tool") or "unknown")
             entry = tools.setdefault(tool, {"calls": 0, "failures": 0, "duration_ms": 0})
             entry["calls"] += 1

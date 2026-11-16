@@ -19,11 +19,13 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 
-from backend.api.models import AgentEventsQuery
+from backend.api.models import AgentEventsQuery, ApproachQuery
 from backend.api.otlp import ExportLogsServiceRequest, to_event_rows
 from backend.api.settings import load_config
 from backend.logging import log
 from backend.orchestrator.agent_otel import summarize_events, timeline_from_events
+from backend.orchestrator.approach import PHASES, approach_from_events
+from backend.orchestrator.config import Config
 from backend.orchestrator.state import AgentEventRow, StateStore
 
 # Largest export body accepted, after decompression. A batch is a second
@@ -54,12 +56,17 @@ def _read_body(raw: bytes, content_encoding: str) -> bytes:
     return body
 
 
-def _state_db_path() -> str:
-    """The jobs database, or a 503 when no config exists yet."""
+def _load_config() -> Config:
+    """The orchestrator config, or a 503 when none exists yet."""
     try:
-        return load_config().state_db_path
+        return load_config()
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=f"No orchestrator config found: {exc}") from exc
+
+
+def _state_db_path() -> str:
+    """The jobs database, or a 503 when no config exists yet."""
+    return _load_config().state_db_path
 
 
 def _store_batch(sandbox_name: str, rows: list[AgentEventRow]) -> None:
@@ -128,4 +135,32 @@ def register_otlp_routes(app: FastAPI) -> None:
             "events": events,
             "summary": summarize_events(events),
             "timeline": [dataclasses.asdict(e) for e in timeline_from_events(events)],
+        }
+
+    @app.get("/jobs/{sandbox_name}/approach")
+    def get_approach(
+        sandbox_name: str, query: Annotated[ApproachQuery, Depends()]
+    ) -> dict[str, object]:
+        """How a job went about its task: each tool call sorted into a
+        phase (explore, edit, verify, ...), and stats drawn from them.
+
+        A compact view of the same events `/agent-events` serves, light
+        enough to fetch for every contender in a comparison at once. Empty
+        steps rather than 404 for a job with no events, as there.
+        """
+        config = _load_config()
+        with StateStore(config.state_db_path) as store:
+            job = store.get(sandbox_name)
+            since = store.get_agent_launched_at(sandbox_name) if query.latest_turn else None
+            events = store.get_agent_events(sandbox_name, since=since, limit=query.limit)
+        repo = job.get("repo") if job else None
+        approach = approach_from_events(
+            events,
+            workdir=repo if isinstance(repo, str) else None,
+            protocol_files=[config.status_file],
+        )
+        return {
+            "phases": list(PHASES),
+            "steps": [dataclasses.asdict(s) for s in approach.steps],
+            "stats": dataclasses.asdict(approach.stats),
         }

@@ -1,0 +1,60 @@
+/* Approach strips (components/ApproachComparison.tsx, charts/ApproachStrip.tsx).
+ *
+ * Each contender is one compact card; the strip inside is the only loud
+ * thing, lanes and axis stay recessive.
+ */
+
+/* Grid children default to min-width: auto, so the wide stats table would
+   stretch the column and push every strip past the viewport. Pin both
+   levels to the container width; the table scrolls inside its .scroll-x. */
+.approach {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Row headers carry a hint on a second line rather than one long line. */
+.approach .standings th[scope="row"] {
+  white-space: normal;
+  min-width: 12em;
+}
+
+.approach__hint {
+  display: block;
+  font-weight: 400;
+}
+
+.approach-strip {
+  display: block;
+  min-width: 720px;
+}
+
+.approach__job {
+  padding-bottom: var(--space-2);
+}
+
+.approach__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.approach__head h4 {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+
+/* Hovering a mark dims nothing else; it just shows where the pointer is. */
+.approach-strip__mark:hover rect:last-child {
+  stroke: var(--text);
+  stroke-width: 1;
+}
+
+.approach__files summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  padding: var(--space-2) 0;
+}

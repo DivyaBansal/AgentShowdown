@@ -17,6 +17,7 @@ import { ComparisonSpread } from "../charts/ComparisonSpread";
 import { TelemetryChart } from "../charts/TelemetryChart";
 import { assignSeriesColorsFor } from "../charts/palette";
 import { AgentTimeline } from "../components/AgentTimeline";
+import { ApproachComparison } from "../components/ApproachComparison";
 import { GroupedJobs } from "../components/GroupedJobs";
 import { LogView } from "../components/LogView";
 import { ReplyForm } from "../components/ReplyForm";
@@ -134,6 +135,15 @@ export function CompareView({
         </div>
         <div className="surface__body">
           <ComparisonSpread jobs={visible} colorFor={colorFor} />
+        </div>
+      </section>
+
+      <section className="surface">
+        <div className="surface__head">
+          <h2>How they worked</h2>
+        </div>
+        <div className="surface__body">
+          <ApproachComparison jobs={visible} colorFor={colorFor} />
         </div>
       </section>
 
