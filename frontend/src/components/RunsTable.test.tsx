@@ -1,8 +1,8 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Job } from "../api";
 import { formatTimestamp } from "../lib/jobs";
-import { Standings } from "./Standings";
+import { RunsTable } from "./RunsTable";
 
 function job(overrides: Partial<Job> = {}): Job {
   return {
@@ -34,6 +34,7 @@ function job(overrides: Partial<Job> = {}): Job {
     tool_failures: null,
     model_requests: null,
     kits: null,
+    telemetry: null,
     repo: null,
     log_tail: null,
     launch_s: null,
@@ -61,19 +62,49 @@ function agentOrder(): string[] {
     .map((row) => within(row).getAllByRole("cell")[1]!.textContent ?? "");
 }
 
-describe("Standings", () => {
-  it("lists every job in placement order by default", () => {
-    render(<Standings jobs={JOBS} colorFor={() => "red"} />);
-    // Finished first; cursor is still unfinished-but-not-failed; codex failed.
-    expect(agentOrder()).toEqual(["claude", "cursor", "codex"]);
-    expect(screen.getByRole("columnheader", { name: /rank/i })).toHaveAttribute(
-      "aria-sort",
-      "ascending",
+describe("RunsTable", () => {
+  it("lists the newest run first by default, with no ranking", () => {
+    render(
+      <RunsTable
+        jobs={[
+          job({ sandbox_name: "old", agent_id: "codex", started_at: "2026-10-01T09:00:00Z" }),
+          job({ sandbox_name: "new", agent_id: "claude", started_at: "2026-10-03T09:00:00Z" }),
+          job({ sandbox_name: "unstarted", agent_id: "cursor", started_at: null }),
+        ]}
+        colorFor={() => "red"}
+      />,
     );
+
+    // A run that hasn't started has no time to sort by, so it goes last.
+    expect(agentOrder()).toEqual(["claude", "codex", "cursor"]);
+    expect(screen.getByRole("columnheader", { name: /started/i })).toHaveAttribute(
+      "aria-sort",
+      "descending",
+    );
+    expect(screen.queryByRole("columnheader", { name: /rank/i })).not.toBeInTheDocument();
+  });
+
+  it("sorts by feature, newest first within each one", () => {
+    render(
+      <RunsTable
+        jobs={[
+          job({ sandbox_name: "b-new", feature_id: "b", agent_id: "codex", started_at: "2026-10-03T09:00:00Z" }),
+          job({ sandbox_name: "a-old", feature_id: "a", agent_id: "claude", started_at: "2026-10-01T09:00:00Z" }),
+          job({ sandbox_name: "a-new", feature_id: "a", agent_id: "cursor", started_at: "2026-10-02T09:00:00Z" }),
+        ]}
+        colorFor={() => "red"}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /feature/i }));
+    expect(agentOrder()).toEqual(["cursor", "claude", "codex"]);
+
+    fireEvent.click(screen.getByRole("button", { name: /feature/i }));
+    expect(agentOrder()).toEqual(["codex", "cursor", "claude"]);
   });
 
   it("sorts by a column, and reverses on a second click", () => {
-    render(<Standings jobs={JOBS} colorFor={() => "red"} />);
+    render(<RunsTable jobs={JOBS} colorFor={() => "red"} />);
 
     fireEvent.click(screen.getByRole("button", { name: /agent time/i }));
     expect(agentOrder()).toEqual(["codex", "claude", "cursor"]);
@@ -92,7 +123,7 @@ describe("Standings", () => {
   });
 
   it("shows an unreported metric as a dash, never as zero", () => {
-    render(<Standings jobs={JOBS} colorFor={() => "red"} />);
+    render(<RunsTable jobs={JOBS} colorFor={() => "red"} />);
     const cursorRow = screen.getByText("cursor").closest("tr")!;
     const cells = within(cursorRow).getAllByRole("cell");
     // Index 5 is the tokens column.
@@ -102,7 +133,7 @@ describe("Standings", () => {
 
   it("shows tool calls and model requests, sortable, with failures noted", () => {
     render(
-      <Standings
+      <RunsTable
         jobs={[
           job({ sandbox_name: "a", agent_id: "claude", tool_calls: 40, model_requests: 12 }),
           job({
@@ -127,7 +158,7 @@ describe("Standings", () => {
 
   it("says which skill kit a job carried, and none when it carried none", () => {
     render(
-      <Standings
+      <RunsTable
         jobs={[
           job({ sandbox_name: "a", kits: '["./demo/kits/frontend-design"]' }),
           job({ sandbox_name: "b", agent_id: "codex", kits: "[]" }),
@@ -142,7 +173,7 @@ describe("Standings", () => {
 
   it("breaks total tokens down into input, cached and output on hover", () => {
     render(
-      <Standings
+      <RunsTable
         jobs={[job({ input_tokens: 1000, cached_input_tokens: 800, output_tokens: 50 })]}
         colorFor={() => "red"}
       />,
@@ -158,7 +189,7 @@ describe("Standings", () => {
     const early = "2026-10-26T09:00:00+00:00";
     const late = "2026-10-26T10:00:00+00:00";
     render(
-      <Standings
+      <RunsTable
         jobs={[
           job({ sandbox_name: "b", agent_id: "codex", started_at: late }),
           job({ sandbox_name: "a", agent_id: "claude", started_at: early }),
@@ -177,12 +208,55 @@ describe("Standings", () => {
 
   it("reports test and lint results as pass or fail", () => {
     render(
-      <Standings
+      <RunsTable
         jobs={[job({ tests_passed: 1, lint_passed: 0 })]}
         colorFor={() => "red"}
       />,
     );
     expect(screen.getByText("pass")).toBeInTheDocument();
     expect(screen.getByText("fail")).toBeInTheDocument();
+  });
+});
+
+describe("RunsTable row selection", () => {
+  it("opens a job when its row is clicked", () => {
+    const onSelect = vi.fn();
+    render(<RunsTable jobs={JOBS} colorFor={() => "red"} onSelect={onSelect} />);
+    const button = screen.getByRole("button", { name: `Inspect ${JOBS[0]!.sandbox_name}` });
+
+    fireEvent.click(button.closest("tr")!.querySelector("td.num")!);
+
+    expect(onSelect).toHaveBeenCalledOnce();
+    expect(onSelect.mock.calls[0]?.[0]).toMatchObject({ sandbox_name: JOBS[0]!.sandbox_name });
+  });
+
+  it("opens a job from the keyboard through the agent button, once", () => {
+    const onSelect = vi.fn();
+    render(<RunsTable jobs={JOBS} colorFor={() => "red"} onSelect={onSelect} />);
+
+    fireEvent.click(screen.getByRole("button", { name: `Inspect ${JOBS[1]!.sandbox_name}` }));
+
+    expect(onSelect).toHaveBeenCalledOnce();
+    expect(onSelect.mock.calls[0]?.[0]).toMatchObject({ sandbox_name: JOBS[1]!.sandbox_name });
+  });
+
+  it("marks the row open in the inspector", () => {
+    render(
+      <RunsTable
+        jobs={JOBS}
+        colorFor={() => "red"}
+        selectedName={JOBS[0]!.sandbox_name}
+        onSelect={() => {}}
+      />,
+    );
+
+    const row = screen.getByRole("button", { name: `Inspect ${JOBS[0]!.sandbox_name}` }).closest("tr");
+    expect(row).toHaveAttribute("aria-current", "true");
+  });
+
+  it("offers no inspect buttons without a handler", () => {
+    render(<RunsTable jobs={JOBS} colorFor={() => "red"} />);
+
+    expect(screen.queryByRole("button", { name: /^inspect/i })).not.toBeInTheDocument();
   });
 });

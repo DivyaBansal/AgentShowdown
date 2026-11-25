@@ -44,6 +44,9 @@ export interface Job {
   /** JSON-encoded list of the sbx kit refs the job ran with; null for rows
    *  recorded before kits were. Decode with `jobKits` in lib/jobs. */
   kits: string | null;
+  /** Whether the job's run sampled resource usage (1/0); null for rows
+   *  recorded before the setting was. */
+  telemetry: number | null;
   /** Which repo the job ran against; null for rows recorded before one
    *  shared database held every workspace. */
   repo: string | null;
@@ -133,11 +136,9 @@ export async function fetchRun(runId: string): Promise<{ run: Run; jobs: Job[] }
   return request<{ run: Run; jobs: Job[] }>(`/runs/${encodeURIComponent(runId)}`);
 }
 
-/** Deletes a finished run's history: the run, its jobs and their telemetry.
- *  Branches and PRs it produced are untouched. Refused (ApiError, status
- *  409) while a job is still active or a sandbox from it still exists. */
-export async function deleteRun(runId: string): Promise<{ deleted: string[] }> {
-  return request<{ deleted: string[] }>(`/runs/${encodeURIComponent(runId)}`, {
+/** Deletes one finished job's history, leaving the rest of its run. */
+export async function deleteJob(sandboxName: string): Promise<{ deleted: string }> {
+  return request<{ deleted: string }>(`/jobs/${encodeURIComponent(sandboxName)}`, {
     method: "DELETE",
   });
 }

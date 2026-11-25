@@ -39,6 +39,7 @@ function job(agent_id: string, run_label: string | null = null, model: string | 
     tool_failures: null,
     model_requests: null,
     kits: null,
+    telemetry: null,
     repo: null,
     log_tail: null,
     launch_s: null,

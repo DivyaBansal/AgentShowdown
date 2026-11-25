@@ -34,6 +34,7 @@ function job(overrides: Partial<Job> = {}): Job {
     tool_failures: null,
     model_requests: null,
     kits: null,
+    telemetry: null,
     repo: null,
     log_tail: null,
     launch_s: null,
@@ -49,7 +50,7 @@ function job(overrides: Partial<Job> = {}): Job {
 describe("JobCard", () => {
   it("shows the agent, status and metrics", () => {
     render(<JobCard job={job()} color="var(--series-1)" />);
-    expect(screen.getByLabelText(/arena-f1-claude/i)).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: /arena-f1-claude/i })).toBeInTheDocument();
     expect(screen.getByText("succeeded")).toBeInTheDocument();
     expect(screen.getByText("980")).toBeInTheDocument(); // 900 + 80
   });
@@ -287,5 +288,15 @@ describe("JobCard actions", () => {
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent(/sbx unreachable/i),
     );
+  });
+
+  it("offers to delete a finished job, but not one still running", () => {
+    const { rerender } = render(<JobCard job={job({ status: "crashed" })} color="c" />);
+
+    expect(screen.getByRole("button", { name: /delete arena-f1-claude/i })).toBeInTheDocument();
+
+    rerender(<JobCard job={job({ status: "running" })} color="c" />);
+
+    expect(screen.queryByRole("button", { name: /delete/i })).not.toBeInTheDocument();
   });
 });

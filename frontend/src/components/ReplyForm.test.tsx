@@ -36,6 +36,7 @@ function job(overrides: Partial<Job> = {}): Job {
     tool_failures: null,
     model_requests: null,
     kits: null,
+    telemetry: null,
     repo: null,
     log_tail: null,
     launch_s: null,

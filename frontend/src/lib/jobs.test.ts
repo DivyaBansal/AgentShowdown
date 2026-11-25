@@ -11,10 +11,10 @@ import {
   formatDuration,
   formatTimestamp,
   groupJobs,
+  runStartedAt,
   jobKits,
   kitName,
   latestActivity,
-  placements,
   questionOptions,
   stateBucket,
   statusTone,
@@ -52,6 +52,7 @@ function job(overrides: Partial<Job> = {}): Job {
     tool_failures: null,
     model_requests: null,
     kits: null,
+    telemetry: null,
     repo: null,
     log_tail: null,
     launch_s: null,
@@ -63,48 +64,6 @@ function job(overrides: Partial<Job> = {}): Job {
     ...overrides,
   };
 }
-
-describe("placements", () => {
-  it("ranks a finished run above a faster one that failed", () => {
-    const rank = placements([
-      job({ sandbox_name: "fast-fail", status: "tests_failed", duration_seconds: 10 }),
-      job({ sandbox_name: "slow-pass", status: "succeeded", duration_seconds: 300 }),
-    ]);
-
-    expect(rank.get("slow-pass")).toBe(1);
-    expect(rank.get("fast-fail")).toBe(2);
-  });
-
-  it("breaks a tie between two finished runs on passing tests, then time", () => {
-    const rank = placements([
-      job({ sandbox_name: "no-tests", tests_passed: 0, duration_seconds: 10 }),
-      job({ sandbox_name: "slow", tests_passed: 1, duration_seconds: 200 }),
-      job({ sandbox_name: "quick", tests_passed: 1, duration_seconds: 50 }),
-    ]);
-
-    expect([rank.get("quick"), rank.get("slow"), rank.get("no-tests")]).toEqual([1, 2, 3]);
-  });
-
-  it("restarts numbering per feature, because different tasks are not a match", () => {
-    const rank = placements([
-      job({ sandbox_name: "a1", feature_id: "a" }),
-      job({ sandbox_name: "b1", feature_id: "b" }),
-    ]);
-
-    expect(rank.get("a1")).toBe(1);
-    expect(rank.get("b1")).toBe(1);
-  });
-
-  it("never treats a missing duration as instant", () => {
-    const rank = placements([
-      job({ sandbox_name: "unknown", duration_seconds: null }),
-      job({ sandbox_name: "timed", duration_seconds: 500 }),
-    ]);
-
-    expect(rank.get("timed")).toBe(1);
-    expect(rank.get("unknown")).toBe(2);
-  });
-});
 
 describe("compareNullableAscending", () => {
   it("orders values ascending with nulls last, and two nulls as equal", () => {
@@ -271,6 +230,37 @@ describe("groupJobs", () => {
 
     expect(groups).toHaveLength(1);
     expect(groups[0]?.label).toBe("No run");
+  });
+
+  it("puts the latest run first, not the alphabetically first id", () => {
+    // Run ids are random hex, so sorting by id scrambled the history.
+    const groups = groupJobs(
+      [
+        job({ sandbox_name: "old", run_id: "run-aaa", started_at: "2026-10-01T09:00:00Z" }),
+        job({ sandbox_name: "new", run_id: "run-zzz", started_at: "2026-11-01T09:00:00Z" }),
+        job({ sandbox_name: "loose", run_id: null, started_at: "2026-12-01T09:00:00Z" }),
+        job({
+          sandbox_name: "unstarted",
+          run_id: "run-mmm",
+          started_at: null,
+          created_at: "2026-10-15T09:00:00Z",
+        }),
+      ],
+      "run",
+    );
+
+    expect(groups.map((g) => g.key)).toEqual(["run-zzz", "run-mmm", "run-aaa", "(none)"]);
+  });
+
+  it("dates a run by its first job to start", () => {
+    expect(
+      runStartedAt([
+        job({ started_at: "2026-11-25T21:19:05Z" }),
+        job({ started_at: "2026-11-25T20:47:07Z" }),
+        job({ started_at: null }),
+      ]),
+    ).toBe("2026-11-25T20:47:07Z");
+    expect(runStartedAt([job({ started_at: null })])).toBeNull();
   });
 
   it("heads a run's group with the feature it ran", () => {

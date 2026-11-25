@@ -1,9 +1,12 @@
-/** Every job as one ranked, sortable table.
+/** Every run as one sortable table, newest first.
  *
- * Placement is within a feature: two agents on the same task are a match,
- * two different tasks are not, so the rank restarts per feature. The table
- * is also the accessibility backstop for the charts -- every value a chart
- * draws is here as text.
+ * Deliberately not a leaderboard: there are no agreed winning criteria, so
+ * the table lays the numbers side by side and leaves judging them to the
+ * reader. It is also the accessibility backstop for the charts -- every
+ * value a chart draws is here as text.
+ *
+ * Given `onSelect`, a row opens that job in the inspector: click anywhere
+ * on it, or reach the agent name by keyboard, which is a real button.
  */
 
 import { useState } from "react";
@@ -11,7 +14,6 @@ import type { Job } from "../api";
 import { seriesKey } from "../charts/palette";
 import { useNow } from "../hooks/useNow";
 import {
-  compareForPlacement,
   canStop,
   compareNullableAscending,
   elapsedSeconds,
@@ -21,14 +23,13 @@ import {
   formatTimestamp,
   jobKits,
   kitName,
-  placements,
   statusTone,
   totalTokens,
 } from "../lib/jobs";
 import { StatusChip } from "./ui/StatusChip";
 
 type SortKey =
-  | "rank"
+  | "feature"
   | "agent"
   | "started"
   | "duration"
@@ -45,7 +46,7 @@ interface Column {
 }
 
 const COLUMNS: Column[] = [
-  { key: "rank", label: "Rank", numeric: false },
+  { key: "feature", label: "Feature", numeric: false },
   { key: "agent", label: "Agent", numeric: false },
   { key: "started", label: "Started", numeric: false },
   { key: "duration", label: "Agent time", numeric: true },
@@ -123,16 +124,26 @@ function verdict(value: number | null) {
   );
 }
 
-export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job) => string }) {
-  const [sortKey, setSortKey] = useState<SortKey>("rank");
-  const [descending, setDescending] = useState(false);
+export function RunsTable({
+  jobs,
+  colorFor,
+  selectedName = null,
+  onSelect,
+}: {
+  jobs: Job[];
+  colorFor: (job: Job) => string;
+  /** The job open in the inspector, marked on its row. */
+  selectedName?: string | null;
+  onSelect?: (job: Job) => void;
+}) {
+  // Newest first: the run you just launched is the one you came to see.
+  const [sortKey, setSortKey] = useState<SortKey>("started");
+  const [descending, setDescending] = useState(true);
   const now = useNow(jobs.some((job) => canStop(job.status)));
-
-  const rank = placements(jobs);
 
   // Nullable columns keep unreported values last in *both* directions:
   // flipping the sort must not float "no data" to the top as if it won.
-  const metric: Record<Exclude<SortKey, "rank" | "agent">, (job: Job) => number | null> = {
+  const metric: Record<Exclude<SortKey, "feature" | "agent">, (job: Job) => number | null> = {
     started: startedMs,
     duration: (job) => elapsedSeconds(job, now),
     endToEnd: endToEndSeconds,
@@ -145,8 +156,12 @@ export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job
   const rows = [...jobs].sort((a, b) => {
     const flip = descending ? -1 : 1;
 
-    if (sortKey === "rank") {
-      return flip * (a.feature_id.localeCompare(b.feature_id) || compareForPlacement(a, b));
+    if (sortKey === "feature") {
+      // Within a feature, newest first whichever way the features run.
+      return (
+        flip * a.feature_id.localeCompare(b.feature_id) ||
+        compareNullableAscending(startedMs(b), startedMs(a))
+      );
     }
 
     if (sortKey === "agent") {
@@ -198,24 +213,32 @@ export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job
           </tr>
         </thead>
         <tbody>
-          {rows.map((job) => {
-            const place = rank.get(job.sandbox_name) ?? 0;
-
-            return (
-              <tr key={job.sandbox_name}>
-                <td className={place === 1 ? "rank rank--first" : "rank"}>
-                  {place}
-                  <div className="feature-tag">{job.feature_id}</div>
-                </td>
+          {rows.map((job) => (
+              <tr
+                key={job.sandbox_name}
+                className={onSelect ? "is-selectable" : undefined}
+                aria-current={job.sandbox_name === selectedName ? "true" : undefined}
+                // The agent button's click bubbles here too, so keyboard and
+                // pointer share this one handler.
+                onClick={onSelect ? () => onSelect(job) : undefined}
+              >
+                <td className="mono">{job.feature_id}</td>
                 <td>
-                  <span className="agent-key">
-                    <span
-                      className="swatch"
-                      style={{ background: colorFor(job) }}
-                      aria-hidden="true"
-                    />
-                    {seriesKey(job)}
-                  </span>
+                  {onSelect ? (
+                    <button
+                      type="button"
+                      className="row-link agent-key"
+                      aria-label={`Inspect ${job.sandbox_name}`}
+                    >
+                      <span className="swatch" style={{ background: colorFor(job) }} aria-hidden="true" />
+                      {seriesKey(job)}
+                    </button>
+                  ) : (
+                    <span className="agent-key">
+                      <span className="swatch" style={{ background: colorFor(job) }} aria-hidden="true" />
+                      {seriesKey(job)}
+                    </span>
+                  )}
                 </td>
                 <td className="num">{formatTimestamp(job.started_at) ?? NO_DATA}</td>
                 <td className="is-num num">
@@ -233,8 +256,7 @@ export function Standings({ jobs, colorFor }: { jobs: Job[]; colorFor: (job: Job
                 <td>{verdict(job.tests_passed)}</td>
                 <td>{verdict(job.lint_passed)}</td>
               </tr>
-            );
-          })}
+          ))}
         </tbody>
       </table>
     </div>

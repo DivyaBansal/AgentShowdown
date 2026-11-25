@@ -15,6 +15,7 @@ import {
   statusTone,
   totalTokens,
 } from "../lib/jobs";
+import { DeleteJobButton } from "./DeleteJobButton";
 import { ReplyForm } from "./ReplyForm";
 import { Notice } from "./ui/Notice";
 import { StatusChip } from "./ui/StatusChip";
@@ -47,10 +48,13 @@ function Metric({
 export function JobCard({
   job,
   color,
+  selected = false,
   onSelect,
 }: {
   job: Job;
   color: string;
+  /** Whether this job is the one open in the inspector. */
+  selected?: boolean;
   onSelect?: (job: Job) => void;
 }) {
   const tokens = totalTokens(job);
@@ -59,6 +63,9 @@ export function JobCard({
   const [pending, setPending] = useState(false);
   const showStop = canStop(job.status);
   const showRespawn = canRespawn(job.status);
+  // Finished one way or another; the server still refuses if its sandbox
+  // is around, and says so.
+  const showDelete = !showStop;
   const now = useNow(showStop);
 
   async function handleStop() {
@@ -88,14 +95,21 @@ export function JobCard({
   }
 
   return (
-    <article className="job-card" aria-label={`Job ${job.sandbox_name}`}>
+    <article
+      className={selected ? "job-card job-card--selected" : "job-card"}
+      aria-label={`Job ${job.sandbox_name}`}
+      aria-current={selected ? "true" : undefined}
+    >
       <span className="job-card__rail" style={{ background: color }} aria-hidden="true" />
       <div className="job-card__head">
         <div>
           <span className="agent-key">{seriesKey(job)}</span>
           <div className="job-card__feature">{job.feature_id}</div>
         </div>
-        <StatusChip tone={statusTone(job.status)}>{job.status}</StatusChip>
+        {/* Keyed on status so the chip pops when the job moves on. */}
+        <StatusChip key={job.status} tone={statusTone(job.status)}>
+          {job.status}
+        </StatusChip>
       </div>
       {activity && (
         <p
@@ -126,7 +140,7 @@ export function JobCard({
         <Metric label="Diff" value={formatDiff(job)} />
         <Metric label="Branch" value={job.branch} />
       </dl>
-      {(job.pr_url || onSelect || showStop || showRespawn) && (
+      {(job.pr_url || onSelect || showStop || showRespawn || showDelete) && (
         <div className="job-card__foot">
           {job.pr_url ? <a href={job.pr_url}>View pull request</a> : <span />}
           <div className="actions">
@@ -141,10 +155,15 @@ export function JobCard({
               </button>
             )}
             {onSelect && (
-              <button type="button" onClick={() => onSelect(job)}>
+              <button
+                type="button"
+                aria-pressed={selected}
+                onClick={() => onSelect(job)}
+              >
                 Inspect
               </button>
             )}
+            {showDelete && <DeleteJobButton sandboxName={job.sandbox_name} />}
           </div>
         </div>
       )}

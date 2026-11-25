@@ -1,11 +1,17 @@
 /** The comparison half of the app: launch runs and read the results.
  *
- * Reads top to bottom like a results page: start a showdown, the standings,
- * the head-to-head charts, then each contender's card. Sandbox housekeeping
- * sits collapsed at the bottom because it is occasional and destructive.
+ * Laid out so nothing is a long scroll away. Launching a showdown is a
+ * collapsible panel at the top. The results are tabs (contenders, runs,
+ * head to head, how they worked, sandboxes) in a bar that stays
+ * pinned under the header. Inspecting a contender opens a drawer beside the
+ * board rather than a section at the bottom of the page. The open tab and
+ * the grouping are remembered, so a return visit lands where you left off.
+ *
+ * Every tab stays mounted while hidden, so a sort order or a chart's
+ * selected feature survives a trip to another tab.
  */
 
-import { useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import {
   type AgentInfo,
   type Feature,
@@ -14,20 +20,34 @@ import {
   type SandboxSummary,
 } from "../api";
 import { ComparisonSpread } from "../charts/ComparisonSpread";
-import { TelemetryChart } from "../charts/TelemetryChart";
 import { assignSeriesColorsFor } from "../charts/palette";
-import { AgentTimeline } from "../components/AgentTimeline";
 import { ApproachComparison } from "../components/ApproachComparison";
-import { GroupedJobs } from "../components/GroupedJobs";
-import { LogView } from "../components/LogView";
-import { ReplyForm } from "../components/ReplyForm";
+import { GroupModePicker, GroupedJobs } from "../components/GroupedJobs";
+import { JobInspector } from "../components/JobInspector";
 import { RunLauncher } from "../components/RunLauncher";
 import { SandboxControls } from "../components/SandboxControls";
-import { Standings } from "../components/Standings";
+import { RunsTable } from "../components/RunsTable";
+import { Drawer } from "../components/ui/Drawer";
 import { Notice } from "../components/ui/Notice";
 import { Panel } from "../components/ui/Panel";
-import { StatusChip } from "../components/ui/StatusChip";
-import { useSamples } from "../hooks/useSamples";
+import { Tabs } from "../components/ui/Tabs";
+import { panelId, tabId } from "../components/ui/tabIds";
+import { usePref } from "../hooks/usePref";
+import { GROUP_MODES, groupJobs, stateBucket, type GroupMode } from "../lib/jobs";
+
+const SECTIONS = ["contenders", "runs", "head-to-head", "approach", "sandboxes"] as const;
+
+type Section = (typeof SECTIONS)[number];
+
+const SECTION_LABELS: Record<Section, string> = {
+  contenders: "Contenders",
+  runs: "Runs",
+  "head-to-head": "Head to head",
+  approach: "How they worked",
+  sandboxes: "Sandboxes",
+};
+
+const GROUP = "compare";
 
 /** The last path segment, so a long absolute path stays readable in a cell. */
 function repoLabel(repo: string | null): string {
@@ -35,6 +55,40 @@ function repoLabel(repo: string | null): string {
   const parts = repo.split("/").filter(Boolean);
 
   return parts[parts.length - 1] ?? repo;
+}
+
+/** A count beside a tab label; `urgent` for something waiting on a person. */
+function Badge({ count, urgent = false, title }: { count: number; urgent?: boolean; title: string }) {
+  if (count === 0) return null;
+
+  return (
+    <span className={urgent ? "tab-badge tab-badge--urgent" : "tab-badge"} title={title}>
+      {count}
+      <span className="visually-hidden">{` ${title}`}</span>
+    </span>
+  );
+}
+
+function SectionPanel({
+  section,
+  current,
+  children,
+}: {
+  section: Section;
+  current: Section;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      role="tabpanel"
+      id={panelId(GROUP, section)}
+      aria-labelledby={tabId(GROUP, section)}
+      className="section-panel"
+      hidden={section !== current}
+    >
+      {children}
+    </div>
+  );
 }
 
 export function CompareView({
@@ -56,14 +110,15 @@ export function CompareView({
   onLaunched: () => void;
   loadSandboxes: () => void;
 }) {
+  const [section, setSection] = usePref<Section>("compare.section", SECTIONS, "contenders");
+  const [mode, setMode] = usePref<GroupMode>("compare.groupMode", GROUP_MODES, "state");
   // Only the name is kept in state, not the Job snapshot itself: `jobs`
   // keeps arriving over SSE (including live log_tail updates), and looking
-  // the job up fresh every render is what keeps the inspect panel's output
+  // the job up fresh every render is what keeps the inspector's output
   // actually live instead of frozen at the moment it was opened.
   const [selectedName, setSelectedName] = useState<string | null>(null);
-  const samples = useSamples(selectedName);
   const [repoFilter, setRepoFilter] = useState("");
-  const selectedJob = jobs.find((j) => j.sandbox_name === selectedName) ?? null;
+  const closeInspector = useCallback(() => setSelectedName(null), []);
 
   // One database now holds every workspace's history, so the board needs a
   // way to narrow to the repo in hand.
@@ -73,8 +128,22 @@ export function CompareView({
   // Built from the full roster, so filtering can never renumber the palette.
   const colorFor = assignSeriesColorsFor(jobs);
 
+  // The inspector steps through contenders in the order the board shows them.
+  const ordered = groupJobs(visible, mode).flatMap((group) => group.jobs);
+  const selectedIndex = ordered.findIndex((j) => j.sandbox_name === selectedName);
+  const selectedJob = ordered[selectedIndex] ?? null;
+  const previous = ordered[selectedIndex - 1];
+  const next = selectedIndex === -1 ? undefined : ordered[selectedIndex + 1];
+
+  const waiting = visible.filter((j) => stateBucket(j.status) === "needs_input").length;
+
+  const badges: Partial<Record<Section, ReactNode>> = {
+    contenders: <Badge count={waiting} urgent title="need input" />,
+    sandboxes: <Badge count={sandboxes.length} title="running" />,
+  };
+
   return (
-    <>
+    <div className="compare">
       <div className="view-head">
         <div>
           <h2>Compare</h2>
@@ -99,105 +168,107 @@ export function CompareView({
         )}
       </div>
 
-      <section className="surface">
-        <div className="surface__head">
-          <h2>New showdown</h2>
-        </div>
-        <div className="surface__body">
-          <RunLauncher
-            features={features}
-            agents={agents}
-            disabled={preflight !== null && !preflight.live_runs_possible}
-            onLaunched={onLaunched}
-          />
-        </div>
-      </section>
+      <Panel title="New showdown" summary="Pick a feature and the agents to race on it">
+        <RunLauncher
+          features={features}
+          agents={agents}
+          disabled={preflight !== null && !preflight.live_runs_possible}
+          onLaunched={() => {
+            onLaunched();
+            // A new run shows up on the board, so take them to it.
+            setSection("contenders");
+          }}
+        />
+      </Panel>
 
       {error && <Notice tone="danger">{error}</Notice>}
 
-      <section className="surface">
-        <div className="surface__head">
-          <h2>Standings</h2>
-          <StatusChip>{`${visible.length} job${visible.length === 1 ? "" : "s"}`}</StatusChip>
-        </div>
+      <div className="section-bar">
+        <Tabs
+          group={GROUP}
+          label="Results"
+          className="subtabs"
+          items={SECTIONS.map((value) => ({
+            value,
+            label: SECTION_LABELS[value],
+            badge: badges[value],
+          }))}
+          value={section}
+          onChange={setSection}
+        />
+        <span className="hint section-bar__count">{`${visible.length} job${visible.length === 1 ? "" : "s"}`}</span>
+      </div>
+
+      <SectionPanel section="contenders" current={section}>
         {visible.length === 0 ? (
-          <div className="surface__body">
-            <p className="hint">Nothing has run yet.</p>
+          <div className="surface surface__body">
+            <p className="hint">Nothing has run yet. Open New showdown above to start one.</p>
           </div>
         ) : (
-          <Standings jobs={visible} colorFor={colorFor} />
+          <>
+            <GroupModePicker mode={mode} onChange={setMode} />
+            <GroupedJobs
+              jobs={visible}
+              colorFor={colorFor}
+              mode={mode}
+              selectedName={selectedJob?.sandbox_name ?? null}
+              onSelect={(job) => setSelectedName(job.sandbox_name)}
+            />
+          </>
         )}
-      </section>
+      </SectionPanel>
 
-      <section className="surface">
-        <div className="surface__head">
-          <h2>Head to head</h2>
-        </div>
-        <div className="surface__body">
-          <ComparisonSpread jobs={visible} colorFor={colorFor} />
-        </div>
-      </section>
-
-      <section className="surface">
-        <div className="surface__head">
-          <h2>How they worked</h2>
-        </div>
-        <div className="surface__body">
-          <ApproachComparison jobs={visible} colorFor={colorFor} />
-        </div>
-      </section>
-
-      {visible.length > 0 && (
-        <GroupedJobs
-          jobs={visible}
-          colorFor={colorFor}
-          onSelect={(job) => setSelectedName(job.sandbox_name)}
-        />
-      )}
-
-      {selectedJob && (
-        <section className="surface">
-          <div className="surface__head">
-            <h2 className="mono">{selectedJob.sandbox_name}</h2>
-            <button type="button" className="btn--quiet" onClick={() => setSelectedName(null)}>
-              Close
-            </button>
-          </div>
-          <div className="surface__body stack">
-            {/* The peek panel: the one place to reply to a job, then see
-                what it's doing. Keyed per job so a half-typed reply never
-                carries over to the next one opened. */}
-            <ReplyForm key={selectedJob.sandbox_name} job={selectedJob} />
-            <TelemetryChart samples={samples} enabled={samples.length > 0} />
-            {/* For a waiting job the detail *is* the question, already
-                shown by the reply form. */}
-            {selectedJob.detail && selectedJob.status !== "awaiting_input" && (
-              <pre className="log">{selectedJob.detail}</pre>
-            )}
-            <AgentTimeline
-              key={`timeline-${selectedJob.sandbox_name}`}
-              sandboxName={selectedJob.sandbox_name}
-              live={selectedJob.status === "running" || selectedJob.status === "queued"}
+      <SectionPanel section="runs" current={section}>
+        <section className="surface" aria-label="Runs">
+          {visible.length === 0 ? (
+            <div className="surface__body">
+              <p className="hint">No runs yet.</p>
+            </div>
+          ) : (
+            <RunsTable
+              jobs={visible}
+              colorFor={colorFor}
+              selectedName={selectedJob?.sandbox_name ?? null}
+              onSelect={(job) => setSelectedName(job.sandbox_name)}
             />
-            <LogView
-              key={selectedJob.sandbox_name}
-              sandboxName={selectedJob.sandbox_name}
-              tail={selectedJob.log_tail}
-            />
-          </div>
+          )}
         </section>
-      )}
+      </SectionPanel>
 
-      <Panel
-        title="Sandboxes"
-        status={
-          sandboxes.length > 0
-            ? { tone: "active", text: `${sandboxes.length} running` }
-            : { tone: "neutral", text: "none running" }
-        }
+      <SectionPanel section="head-to-head" current={section}>
+        <section className="surface surface__body" aria-label="Head to head">
+          <ComparisonSpread jobs={visible} colorFor={colorFor} />
+        </section>
+      </SectionPanel>
+
+      <SectionPanel section="approach" current={section}>
+        <section className="surface surface__body" aria-label="How they worked">
+          <ApproachComparison jobs={visible} colorFor={colorFor} />
+        </section>
+      </SectionPanel>
+
+      <SectionPanel section="sandboxes" current={section}>
+        <section className="surface surface__body" aria-label="Sandboxes">
+          <SandboxControls sandboxes={sandboxes} onChanged={loadSandboxes} />
+        </section>
+      </SectionPanel>
+
+      <Drawer
+        open={selectedJob !== null}
+        label={selectedJob ? `Inspect ${selectedJob.sandbox_name}` : "Inspect"}
+        onClose={closeInspector}
       >
-        <SandboxControls sandboxes={sandboxes} onChanged={loadSandboxes} />
-      </Panel>
-    </>
+        {selectedJob && (
+          <JobInspector
+            job={selectedJob}
+            color={colorFor(selectedJob)}
+            position={{ index: selectedIndex + 1, total: ordered.length }}
+            onPrevious={previous ? () => setSelectedName(previous.sandbox_name) : null}
+            onNext={next ? () => setSelectedName(next.sandbox_name) : null}
+            onClose={closeInspector}
+          />
+        )}
+      </Drawer>
+    </div>
   );
 }
