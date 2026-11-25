@@ -484,7 +484,7 @@ Tests: `charts/palette.ts` — series-key derivation and color assignment.
 ### frontend/src/charts/TelemetryChart.test.tsx
 Tests: `TelemetryChart` — CPU/memory sandbox telemetry chart.
 
-- Explains the cost when telemetry is off instead of an empty chart; renders CPU and memory as separate charts; shows the memory limit as denominator when set; waits rather than plotting with no samples; tolerates unreported readings without crashing.
+- Explains the cost when telemetry is off instead of an empty chart; says no samples arrived (not "off") when a telemetry-on job ends empty; judges pre-setting jobs by their samples; renders CPU and memory as separate charts; shows the memory limit as denominator when set; waits rather than plotting with no samples; tolerates unreported readings without crashing.
 
 ### frontend/src/components/BrandMark.test.tsx
 Tests: `BrandMark` — decorative logo SVG.
@@ -543,10 +543,10 @@ Tests: `SecretsManager` — lists stored secrets, opens `SecretModal`.
 
 - Lists which services have a secret stored; reports what it loaded via `onSecretsChange`; says so when nothing is stored; warns when the sbx secret store can't be read; re-reads the list after the store dialog closes (⚠️ see overlap #6).
 
-### frontend/src/components/Standings.test.tsx
-Tests: `Standings` — sortable leaderboard table.
+### frontend/src/components/RunsTable.test.tsx
+Tests: `RunsTable` — sortable table of every run (no ranking: there are no agreed winning criteria).
 
-- Lists every job in placement order by default; sorts by column and reverses on a second click; shows an unreported metric as a dash, never zero (⚠️ see overlap #3); reports test/lint results as pass or fail.
+- Lists the newest run first by default, with no rank column; sorts by feature (newest first within each); opens a run in the inspector from its row; sorts by column and reverses on a second click; shows an unreported metric as a dash, never zero (⚠️ see overlap #3); reports test/lint results as pass or fail.
 
 ### frontend/src/components/ThemeSwitch.test.tsx
 Tests: `ThemeSwitch` — system/light/dark toggle.
@@ -590,9 +590,8 @@ Tests: `withoutDraftValues` (lib/config.ts) — strips demo-preset values from a
 - Clears every field describing the demo rather than the real repo (⚠️ see overlap #2); keeps generic settings and plumbing fields a save must round-trip; does not mutate the draft object it was given.
 
 ### frontend/src/lib/jobs.test.ts
-Tests: `lib/jobs.ts` — placement ranking, null-safe comparison, metric formatting.
+Tests: `lib/jobs.ts` — null-safe comparison, metric formatting.
 
-- **placements**: ranks a finished run above a faster failed one; breaks ties on tests-passed then duration; restarts numbering per feature; never treats a missing duration as instant.
 - **compareNullableAscending**: orders values ascending with nulls last; two nulls compare equal.
 - **formatters**: keeps a missing metric distinct from zero (⚠️ see overlap #3); formats durations/diffs for reading.
 - **statusTone**: maps each status family to the right tone.
@@ -628,7 +627,7 @@ No exact duplicate test bodies (same assertions, same inputs, same file) were fo
 
 1. **`FeatureEditor.test.tsx` vs. `featuresReducer.test.ts` — the most significant overlap.** The reducer test file exists explicitly to cover "the branchiest part of the editor, with no rendering" (add/remove feature, add/remove agent, env/kit/skip-permissions edits). `FeatureEditor.test.tsx` re-exercises much of the same branching through the rendered UI. Likely intentional (unit + integration), but a bug in the reducer's env handling would be caught redundantly by both.
 2. **`ConfigEditor.test.tsx`'s demo-draft regression test vs. `lib/config.test.ts` (`withoutDraftValues`)**. The component test re-verifies, through a full render + submit, essentially the same demo-value-clearing behavior the pure function already covers in isolation. The component test legitimately guards the *wiring* of the function into the form, but the clearing logic itself is tested twice.
-3. **Null/unreported-metric formatting tested at three layers**: `lib/jobs.test.ts` unit-tests the formatters returning `null`; `JobCard.test.tsx` re-verifies via rendered "not reported" text; `Standings.test.tsx` re-verifies again via a rendered "—" dash. Reasonable defense-in-depth (each component renders nulls differently), but a regression in the shared formatting helpers would be flagged three times, while a presentation-only bug (wrong dash character) would only ever be caught by the two component tests.
+3. **Null/unreported-metric formatting tested at three layers**: `lib/jobs.test.ts` unit-tests the formatters returning `null`; `JobCard.test.tsx` re-verifies via rendered "not reported" text; `RunsTable.test.tsx` re-verifies again via a rendered "—" dash. Reasonable defense-in-depth (each component renders nulls differently), but a regression in the shared formatting helpers would be flagged three times, while a presentation-only bug (wrong dash character) would only ever be caught by the two component tests.
 4. **`App.test.tsx` duplicates `PreflightBanner.test.tsx`** — App's ready/failed-preflight assertions repeat, at the integration level, what `PreflightBanner.test.tsx` already covers in isolation. Standard smoke-test-at-integration-level practice.
 5. **`App.test.tsx` duplicates `ComparisonSpread.test.tsx`** on the "3 charts" assertion — App's own test adds new coverage (a data table alongside the charts) but restates a check the chart component's own suite already makes.
 6. **`SecretsManager.test.tsx`'s "re-reads the list after the store dialog closes" incidentally re-exercises `SecretModal`'s already-tested dialog/cancel semantics.** The unique behavior under test (refetch after close) is real and non-duplicated; the modal open/cancel mechanics it touches along the way are covered again.
@@ -637,4 +636,4 @@ No outright identical frontend test cases were found — all overlaps are the sa
 
 ### Cross-stack note
 
-Several behaviors are guarded on both sides of the stack by design rather than accident — e.g. "unreported metric never renders/serializes as zero" is enforced in the backend (`test_state.py::test_unreported_sample_fields_stay_null`, `test_metrics.py::test_missing_fields_stay_none_rather_than_zero`) and independently in the frontend (`lib/jobs.test.ts`, `JobCard.test.tsx`, `Standings.test.tsx`). This isn't wasted effort — a null can be turned into a false zero at either the Python layer or the TypeScript layer — but it's worth knowing both halves must be kept in sync if the "never show zero for missing data" convention ever changes.
+Several behaviors are guarded on both sides of the stack by design rather than accident — e.g. "unreported metric never renders/serializes as zero" is enforced in the backend (`test_state.py::test_unreported_sample_fields_stay_null`, `test_metrics.py::test_missing_fields_stay_none_rather_than_zero`) and independently in the frontend (`lib/jobs.test.ts`, `JobCard.test.tsx`, `RunsTable.test.tsx`). This isn't wasted effort — a null can be turned into a false zero at either the Python layer or the TypeScript layer — but it's worth knowing both halves must be kept in sync if the "never show zero for missing data" convention ever changes.
