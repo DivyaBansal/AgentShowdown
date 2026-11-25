@@ -141,6 +141,17 @@ class RunIdPath(BaseModel):
     run_id: str = Field(pattern=r"^run-[0-9a-f]{12}$")
 
 
+class SandboxNamePath(BaseModel):
+    """The job in ``DELETE /jobs/{sandbox_name}``.
+
+    Sandbox names are minted from ``[A-Za-z0-9.-]`` (see
+    `orchestrator.job.expand.sandbox_name_for`); anything else is rejected
+    at the boundary rather than reaching the store as a no-op delete.
+    """
+
+    sandbox_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$")
+
+
 class JobQuery(BaseModel):
     """Query params for ``GET /jobs``.
 

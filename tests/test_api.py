@@ -636,6 +636,57 @@ def test_delete_run_rejects_a_malformed_id() -> None:
     assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
+def _two_job_run(job_status: str = "succeeded") -> None:
+    """Records one finished run with two jobs; box-2's status is chosen."""
+    _finished_run()
+    with StateStore(load_config().state_db_path) as store:
+        store.upsert("box-2", feature_id="f1", agent_id="codex", status=job_status, run_id=RUN_ID)
+
+
+def test_delete_job_removes_just_that_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    _two_job_run(job_status="crashed")
+    monkeypatch.setattr(runner_module, "sbx_list", dict)
+
+    response = client.delete("/jobs/box-2")
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json() == {"deleted": "box-2"}
+    assert [job["sandbox_name"] for job in client.get("/jobs").json()["jobs"]] == ["box-1"]
+    assert len(client.get("/runs").json()["runs"]) == 1
+
+
+def test_delete_job_refuses_while_it_is_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    _two_job_run(job_status="running")
+    monkeypatch.setattr(runner_module, "sbx_list", dict)
+
+    response = client.delete("/jobs/box-2")
+
+    assert response.status_code == HTTPStatus.CONFLICT
+    assert len(client.get("/jobs").json()["jobs"]) == 2
+
+
+def test_delete_job_refuses_while_its_sandbox_survives(monkeypatch: pytest.MonkeyPatch) -> None:
+    _two_job_run(job_status="stopped")
+    monkeypatch.setattr(runner_module, "sbx_list", lambda: {"box-2": {}})
+
+    response = client.delete("/jobs/box-2")
+
+    assert response.status_code == HTTPStatus.CONFLICT
+    assert "remove it first" in response.json()["detail"]
+
+
+def test_delete_unknown_job_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner_module, "sbx_list", dict)
+
+    assert client.delete("/jobs/box-9").status_code == HTTPStatus.NOT_FOUND
+
+
+def test_delete_job_rejects_a_malformed_name() -> None:
+    response = client.delete("/jobs/bad name;rm")
+
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
 def test_runs_and_jobs_listings_are_empty_initially() -> None:
     assert client.get("/runs").json()["runs"] == []
     assert client.get("/jobs").json()["jobs"] == []

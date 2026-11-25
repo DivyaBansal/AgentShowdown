@@ -25,6 +25,7 @@ from backend.api.models import (
     LogSource,
     RemoveSandboxRequest,
     RunIdPath,
+    SandboxNamePath,
     StartRunRequest,
 )
 from backend.api.preflight import preflight
@@ -35,7 +36,9 @@ from backend.api.routes_otlp import register_otlp_routes
 from backend.api.routes_setup import register_setup_routes
 from backend.api.runner import (
     RunConflictError,
+    UnknownJobError,
     UnknownRunError,
+    delete_job,
     delete_run,
     start_answer,
     start_followup,
@@ -230,6 +233,22 @@ def register_routes(app: FastAPI) -> None:  # noqa: PLR0915 -- one call per rout
             log.warning("run_delete_rejected", run_id=path.run_id, detail=str(exc))
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"deleted": deleted}
+
+    @app.delete("/jobs/{sandbox_name}")
+    def remove_job(path: Annotated[SandboxNamePath, Depends()]) -> dict[str, str]:
+        """Deletes one finished job's history: its row and its telemetry.
+
+        The rest of its run stays. Only the record goes -- its branch and PR
+        are untouched. Refused while the job is live (see `delete_job`).
+        """
+        try:
+            delete_job(_config(), path.sandbox_name)
+        except UnknownJobError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CommandError as exc:
+            log.warning("job_delete_rejected", sandbox_name=path.sandbox_name, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"deleted": path.sandbox_name}
 
     @app.get("/jobs")
     def list_jobs(query: Annotated[JobQuery, Depends()]) -> dict[str, object]:

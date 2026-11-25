@@ -549,6 +549,44 @@ def test_delete_run_removes_its_jobs_and_their_telemetry(tmp_path: Path) -> None
     assert len(store.get_agent_events("box-2")) == 1
 
 
+def test_delete_job_removes_one_job_and_leaves_the_rest_of_its_run(tmp_path: Path) -> None:
+    store = StateStore(str(tmp_path / "state.sqlite3"))
+    store.add_run("run-a", feature_id="f1", created_at="t0", mode="live", status="finished")
+    store.upsert("box-1", feature_id="f1", agent_id="claude", status="succeeded", run_id="run-a")
+    store.upsert("box-2", feature_id="f1", agent_id="codex", status="crashed", run_id="run-a")
+    for name in ("box-1", "box-2"):
+        store.add_sample(_sample(name, "2026-01-01T00:00:00+00:00"))
+        store.add_agent_events(name, [state.AgentEventRow(name="e", ts=None)])
+        store.set_agent_launched_at(name, "t0")
+
+    assert store.delete_job("box-2") is True
+
+    assert store.get("box-2") is None
+    assert store.get_samples("box-2") == []
+    assert store.get_agent_events("box-2") == []
+    assert store.get_agent_launched_at("box-2") is None
+    # Its sibling and the run itself stay.
+    assert store.get("box-1") is not None
+    assert len(store.get_samples("box-1")) == 1
+    assert store.get_run("run-a") is not None
+
+
+def test_delete_job_takes_an_emptied_run_with_it(tmp_path: Path) -> None:
+    store = StateStore(str(tmp_path / "state.sqlite3"))
+    store.add_run("run-a", feature_id="f1", created_at="t0", mode="live", status="finished")
+    store.upsert("box-1", feature_id="f1", agent_id="claude", status="succeeded", run_id="run-a")
+
+    store.delete_job("box-1")
+
+    assert store.get_run("run-a") is None
+
+
+def test_delete_unknown_job_is_a_no_op(tmp_path: Path) -> None:
+    store = StateStore(str(tmp_path / "state.sqlite3"))
+
+    assert store.delete_job("nope") is False
+
+
 def test_codex_stream_noise_does_not_crowd_tool_calls_out_of_the_limit(tmp_path: Path) -> None:
     """codex sends thousands of `*.delta` stream events and metric-export
     errors per run; counted against `limit`, they pushed a finished job's

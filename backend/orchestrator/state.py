@@ -563,13 +563,51 @@ class StateStore:
                 ).fetchall()
             ]
             for name in names:
-                self.conn.execute("DELETE FROM samples WHERE sandbox_name = ?", (name,))
-                self.conn.execute("DELETE FROM agent_events WHERE sandbox_name = ?", (name,))
-                self.conn.execute("DELETE FROM job_specs WHERE sandbox_name = ?", (name,))
-                self.conn.execute("DELETE FROM agent_launches WHERE sandbox_name = ?", (name,))
+                self._delete_sandbox_records(name)
             self.conn.execute("DELETE FROM jobs WHERE run_id = ?", (run_id,))
             self.conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
         return names
+
+    def delete_job(self, sandbox_name: str) -> bool:
+        """Deletes one job and everything recorded under its sandbox name.
+
+        The rest of its run is untouched. If it was the run's last job, the
+        run row goes too, so no empty run is left listed with nothing in it.
+
+        Args:
+            sandbox_name: The job to delete.
+
+        Returns:
+            Whether a job by that name existed (and so was deleted).
+        """
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT run_id FROM jobs WHERE sandbox_name = ?", (sandbox_name,)
+            ).fetchone()
+            if row is None:
+                return False
+            self._delete_sandbox_records(sandbox_name)
+            self.conn.execute("DELETE FROM jobs WHERE sandbox_name = ?", (sandbox_name,))
+            run_id = row[0]
+            if run_id is not None:
+                left = self.conn.execute(
+                    "SELECT 1 FROM jobs WHERE run_id = ? LIMIT 1", (run_id,)
+                ).fetchone()
+                if left is None:
+                    self.conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+        return True
+
+    def _delete_sandbox_records(self, sandbox_name: str) -> None:
+        """Deletes what is keyed by sandbox name rather than by run.
+
+        A sandbox name is reused by the next run of the same feature and
+        agent, so rows left behind would be read as that next run's history.
+        Call inside a transaction.
+        """
+        self.conn.execute("DELETE FROM samples WHERE sandbox_name = ?", (sandbox_name,))
+        self.conn.execute("DELETE FROM agent_events WHERE sandbox_name = ?", (sandbox_name,))
+        self.conn.execute("DELETE FROM job_specs WHERE sandbox_name = ?", (sandbox_name,))
+        self.conn.execute("DELETE FROM agent_launches WHERE sandbox_name = ?", (sandbox_name,))
 
     def add_sample(self, sample: Sample) -> None:
         """Records one resource sample for a sandbox.
