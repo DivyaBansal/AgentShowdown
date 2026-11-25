@@ -17,7 +17,7 @@
 
 import { useId, useState } from "react";
 import type { Job } from "../api";
-import { endToEndSeconds, totalTokens, usesKit } from "../lib/jobs";
+import { endToEndSeconds, jobKits, kitName, totalTokens, usesKit } from "../lib/jobs";
 import { assignSeriesColorsFor, colorKey, seriesKey } from "./palette";
 
 interface Metric {
@@ -42,7 +42,7 @@ const METRICS: Metric[] = [
   {
     key: "duration",
     title: "Agent time",
-    unit: "the agent working, launch to exit; lower is better",
+    unit: "the agent working, launch to exit",
     value: (j) => j.duration_seconds,
     format: formatSeconds,
   },
@@ -104,6 +104,9 @@ const BAR_H = 18;
 // baseline, so it is cut with an ellipsis and the full text kept in <title>.
 const LABEL_MAX_CHARS = 22;
 
+// The second line is set at 10px, so a few more characters fit.
+const SECONDARY_MAX_CHARS = 25;
+
 // >= 2px of surface between adjacent bars; the gap is what separates them,
 // never a stroke drawn around the mark. Wide enough for a two-line label.
 const BAR_GAP = 14;
@@ -161,10 +164,26 @@ function rowLabels(jobs: Job[]): Map<string, RowLabel> {
       const repeat = list.length > 1 ? ` #${index + 1}` : "";
       const base = colorKey(job);
       const qualifier = key === base ? null : key.slice(base.length + " · ".length);
-      const kit = usesKit(job) ? " (skill kit)" : "";
+      const kits = (jobKits(job) ?? []).map(kitName);
+      const kit = kits.length > 0 ? ` (skill kit ${kits.join(", ")})` : "";
       const primary = job.model ?? job.agent_id;
-      const rest = [job.model ? job.agent_id : null, qualifier].filter((part) => part !== null);
-      const secondary = rest.length > 0 ? rest.join(" · ") : null;
+      const agent = job.model ? job.agent_id : null;
+
+      // The kit is named on the bar itself, not only implied by the
+      // hatching: a run label like "with-skill" is the user's own words and
+      // most runs don't have one.
+      const kitPart = kits.length > 0 ? `+${kits.join(",")}` : null;
+
+      const join = (parts: (string | null)[]) =>
+        parts.filter((part): part is string => part !== null).join(" · ");
+
+      let rest = join([agent, qualifier, kitPart]);
+
+      // Short on room, the run label gives way: it is in the tooltip, and
+      // the kit is the thing a reader cannot otherwise see.
+      if (kitPart !== null && rest.length > SECONDARY_MAX_CHARS) rest = join([agent, kitPart]);
+
+      const secondary = rest === "" ? null : rest;
 
       labels.set(job.sandbox_name, {
         primary: secondary === null ? primary + repeat : primary,
@@ -241,7 +260,7 @@ function MetricChart({ metric, rows }: { metric: Metric; rows: Row[] }) {
                   fontSize="10"
                   fill="var(--text-3)"
                 >
-                  {truncate(row.label.secondary, LABEL_MAX_CHARS)}
+                  {truncate(row.label.secondary, SECONDARY_MAX_CHARS)}
                 </text>
               )}
               {row.value === null ? (

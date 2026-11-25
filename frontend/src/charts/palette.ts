@@ -8,11 +8,11 @@
  * The colour identity is deliberately coarser than the series: two run
  * labels of the same agent and model (typically "plain" and "with-skill")
  * share a hue, and the charts tell them apart by texture and by name. That
- * keeps each pair visibly a pair, and keeps a 3-model x 2-variant
- * comparison inside the three validated slots instead of greying half of it.
+ * keeps each pair visibly a pair, and stretches the eight slots further.
  *
- * Slots are the validated categorical palette, taken in fixed order and
- * never cycled to invent a ninth hue. Past the cap, series fold into a
+ * Slots are the validated categorical palette (eight hues, checked for
+ * colour-vision deficiency in both themes; see tokens.css), taken in fixed
+ * order and never cycled to invent a ninth hue. Past the cap, series fold into a
  * shared de-emphasis grey rather than getting a generated colour that would
  * be indistinguishable under colour-vision deficiency.
  */
@@ -24,6 +24,11 @@ export const SERIES_VARS = [
   "var(--series-1)",
   "var(--series-2)",
   "var(--series-3)",
+  "var(--series-4)",
+  "var(--series-5)",
+  "var(--series-6)",
+  "var(--series-7)",
+  "var(--series-8)",
 ] as const;
 
 export const OVERFLOW_VAR = "var(--de-emphasis)";

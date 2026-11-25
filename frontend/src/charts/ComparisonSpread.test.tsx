@@ -178,7 +178,51 @@ describe("ComparisonSpread", () => {
       screen
         .getAllByRole("img")[0]
         ?.getAttribute("aria-label"),
-    ).toContain("claude · haiku · with-skill (skill kit)");
+    ).toContain("claude · haiku · with-skill (skill kit ui)");
+  });
+
+  it("names the kit on a skill-kit run's bar, whatever its run label says", () => {
+    render(
+      <ComparisonSpread
+        jobs={[
+          job({ model: "haiku", run_label: null, kits: "[]" }),
+          job({
+            sandbox_name: "kit-run",
+            model: "sonnet",
+            run_label: null,
+            kits: '["/home/me/kits/frontend-design"]',
+          }),
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getAllByText("claude · +frontend-design", { selector: "text" }).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("drops the run label from the bar before the kit name when short on room", () => {
+    render(
+      <ComparisonSpread
+        jobs={[
+          job({ model: "haiku", kits: "[]" }),
+          job({
+            sandbox_name: "kit-run",
+            model: "sonnet",
+            run_label: "with-skill",
+            kits: '["kits/frontend-design"]',
+          }),
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getAllByText("claude · +frontend-design", { selector: "text" }).length,
+    ).toBeGreaterThan(0);
+    // The full name, run label included, is still in the chart's text.
+    expect(screen.getAllByRole("img")[0]?.getAttribute("aria-label")).toContain(
+      "claude · sonnet · with-skill (skill kit frontend-design)",
+    );
   });
 
   it("leaves out the texture key when every run is plain", () => {
@@ -208,9 +252,9 @@ describe("ComparisonSpread", () => {
 
     expect(order).toEqual([
       "claude · haiku · plain",
-      "claude · haiku · with-skill (skill kit)",
+      "claude · haiku · with-skill (skill kit k)",
       "claude · sonnet · plain",
-      "claude · sonnet · with-skill (skill kit)",
+      "claude · sonnet · with-skill (skill kit k)",
     ]);
   });
 
