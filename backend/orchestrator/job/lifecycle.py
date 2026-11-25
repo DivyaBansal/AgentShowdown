@@ -156,6 +156,7 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
         cpus=config.cpus,
         memory_limit=config.memory,
         kits=json.dumps(resolve_kit_paths(spec, profile)),
+        telemetry=config.telemetry,
     )
     store.set_spec(sandbox_name, spec_to_json(spec))
 

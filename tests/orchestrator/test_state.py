@@ -181,6 +181,8 @@ def test_opening_a_legacy_database_adds_the_metric_columns(tmp_path: Path) -> No
     assert job["duration_seconds"] == 174.0
     assert job["input_tokens"] == 1234
     assert job["status"] == "succeeded"  # pre-existing data survives
+    # Unknown, not "off": the row predates recording the setting.
+    assert job["telemetry"] is None
 
 
 def test_migration_is_idempotent_across_reopens(tmp_path: Path) -> None:

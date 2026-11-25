@@ -81,6 +81,7 @@ _WRITABLE_COLUMNS: tuple[str, ...] = (
     "tool_failures",
     "model_requests",
     "kits",
+    "telemetry",
 )
 
 # Why a job failed, as a fixed vocabulary rather than the free-text
@@ -153,6 +154,9 @@ _MIGRATIONS: tuple[tuple[str, str], ...] = (
     # a with-skill run is told apart from a plain one. Unlike the full spec
     # (see job_specs) a kit ref is a path, never a secret.
     ("kits", "ALTER TABLE jobs ADD COLUMN kits TEXT"),
+    # Whether the job's run sampled resource usage (0/1). NULL for rows
+    # recorded before this column, where the setting is unknown.
+    ("telemetry", "ALTER TABLE jobs ADD COLUMN telemetry INTEGER"),
 )
 
 # Columns whose values `_backfill_event_metrics` can derive for rows that
@@ -208,12 +212,13 @@ _UPSERT_SQL = """
         tool_failures,
         model_requests,
         kits,
+        telemetry,
         created_at,
         updated_at
     )
     VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?
     )
     ON CONFLICT(sandbox_name) DO UPDATE SET
         feature_id = excluded.feature_id,
@@ -250,6 +255,7 @@ _UPSERT_SQL = """
         tool_failures = excluded.tool_failures,
         model_requests = excluded.model_requests,
         kits = excluded.kits,
+        telemetry = excluded.telemetry,
         updated_at = excluded.updated_at
 """
 
