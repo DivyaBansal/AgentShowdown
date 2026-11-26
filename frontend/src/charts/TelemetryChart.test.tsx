@@ -17,25 +17,38 @@ function sample(overrides: Partial<Sample> = {}): Sample {
 
 describe("TelemetryChart", () => {
   it("explains the cost when telemetry is off rather than showing a blank chart", () => {
-    render(<TelemetryChart samples={[]} enabled={false} />);
+    render(<TelemetryChart samples={[]} telemetry={false} live />);
     expect(screen.getByText(/telemetry is off/i)).toBeInTheDocument();
     expect(screen.getByText(/sbx exec/)).toBeInTheDocument();
   });
 
+  it("says no samples arrived, not that telemetry is off, when a run with it on ends empty", () => {
+    // A sandbox that dies before the first tick leaves no samples, which
+    // used to be reported as telemetry being off.
+    render(<TelemetryChart samples={[]} telemetry live={false} />);
+    expect(screen.queryByText(/telemetry is off/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/no samples were recorded/i)).toBeInTheDocument();
+  });
+
+  it("judges a job recorded before the setting was by its samples", () => {
+    render(<TelemetryChart samples={[sample()]} telemetry={null} live={false} />);
+    expect(screen.getAllByRole("img")).toHaveLength(2);
+  });
+
   it("renders CPU and memory as separate charts", () => {
     // Cores and bytes share no scale; a second y-axis would be the wrong fix.
-    render(<TelemetryChart samples={[sample(), sample({ cpu_cores: 2 })]} enabled />);
+    render(<TelemetryChart samples={[sample(), sample({ cpu_cores: 2 })]} telemetry live />);
     const charts = screen.getAllByRole("img");
     expect(charts).toHaveLength(2);
   });
 
   it("shows the memory limit as the denominator when one is set", () => {
-    render(<TelemetryChart samples={[sample()]} enabled />);
+    render(<TelemetryChart samples={[sample()]} telemetry live />);
     expect(screen.getByText(/limit 2\.0 GiB/)).toBeInTheDocument();
   });
 
   it("waits rather than plotting when no samples have arrived", () => {
-    render(<TelemetryChart samples={[]} enabled />);
+    render(<TelemetryChart samples={[]} telemetry live />);
     expect(screen.getByText(/waiting for the first sample/i)).toBeInTheDocument();
   });
 
@@ -43,7 +56,8 @@ describe("TelemetryChart", () => {
     render(
       <TelemetryChart
         samples={[sample({ cpu_cores: null, mem_bytes: null, mem_limit_bytes: null })]}
-        enabled
+        telemetry
+        live
       />,
     );
     expect(screen.getAllByText(/no readings yet/i).length).toBe(2);

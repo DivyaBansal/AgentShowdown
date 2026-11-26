@@ -6,7 +6,7 @@
 
 <p align="center">
 <br>
-<b>Run and compare different coding agents and models in parallel Docker sandboxes.<br>
+<b>Run and compare different coding agents and models in parallel Docker sandboxes on your own machine.<br>
 Choose your own harness.<br>
 Don't rely on the hype.</b>
 </p>
@@ -68,16 +68,43 @@ codex's shell commands compare directly. Alongside: calls before the first edit,
 edit → verify cycles, failures, and which files each agent touched. Needs the
 agent's telemetry, so `claude` and `codex` only.
 
+### A finished showdown
+
+One feature (`add-ui`, a web UI for the LangLearn demo) given to six
+agent + model combinations:
+
+<table>
+  <tr>
+    <td width="50%"><a href="demo/.screenshots/comparison.png"><img src="demo/.screenshots/comparison.png" alt="Contender cards for the add-ui feature: one card per agent and model with status, duration, tokens, tool calls, diff size, branch and a link to the pull request; a crashed job offers Respawn"></a></td>
+    <td width="50%"><a href="demo/.screenshots/Final_Standings.png"><img src="demo/.screenshots/Final_Standings.png" alt="Standings table ranking each job by agent time, with end-to-end time, tokens, tool calls (and how many failed), model requests, lines added and removed, and skill kit"></a></td>
+  </tr>
+  <tr>
+    <td><b>Contenders.</b> One card per job, grouped by Feature. Shows status, duration, tokens, tool calls, diff and a link to its pull request. Crashed jobs can be respawned and outputs can be Inspected.</td>
+    <td><b>Standings.</b> Every job ranked within its feature, with agent and end-to-end time, tokens, tool calls (and failures), model requests, diff size and skill kit.</td>
+  </tr>
+  <tr>
+    <td><a href="demo/.screenshots/Head-to-head-comparison.png"><img src="demo/.screenshots/Head-to-head-comparison.png" alt="Head-to-head bar charts per agent: agent time, end-to-end time, tokens used, output tokens, tool calls, model requests and diff size; hatched bars mark runs with a skill kit"></a></td>
+    <td><a href="demo/.screenshots/Analysis-of-tool-calls.png"><img src="demo/.screenshots/Analysis-of-tool-calls.png" alt="How they worked: one strip per contender with each tool call placed in an explore, edit, verify, git or other lane, in step order; failed calls are drawn taller with a triangle"></a></td>
+  </tr>
+  <tr>
+    <td><b>Head to head.</b> Bar charts of time, tokens, tool calls, model requests and diff size. Hatched bars are runs that carried a skill kit.</td>
+    <td><b>How they worked.</b> Each contender's tool calls sorted into phases, step by step or on a time axis. Failed calls stand out and hovering over a shows the command or file.</td>
+  </tr>
+  <tr>
+    <td><a href="demo/.screenshots/Tool-calls-stats.png"><img src="demo/.screenshots/Tool-calls-stats.png" alt="Approach stats table per contender: tool calls, failed calls, calls before first edit, time to first edit and first test, edit-to-verify cycles, files read and edited, and the share of calls in each phase"></a></td>
+    <td><a href="demo/.screenshots/files-edited.png"><img src="demo/.screenshots/files-edited.png" alt="Files edited matrix: one row per file, one column per contender, marking which agent edited which file"></a></td>
+  </tr>
+  <tr>
+    <td><b>Approach stats.</b> How long each agent looked around before its first edit, how quickly it ran tests, how many edit → verify cycles it did, and how its calls split across phases.</td>
+    <td><b>Files edited.</b> Which files each contender touched, so you can see at a glance which agents took the same route and which built something different.</td>
+  </tr>
+</table>
+
 ## Why Docker Sandboxes?
 
-Each sandbox is a microVM with its own kernel, not a container that shares
-the host's kernel. That's the strongest isolation of the common options:
-stronger than OS-level process sandboxes (bubblewrap, Seatbelt, Landlock), plain
-Docker containers or gVisor. An agent can only touch the files and network
+Each sandbox is a microVM (a lightweight virtual machine) with its own Linux kernel, isolated from the host by a hardware-backed hypervisor boundary. An agent can only touch the files and network
 access its sandbox gets, so agents can safely run with permission prompts
-skipped (`dangerously_skip_permissions: true`, the web UI's default). A run
-needs no one to approve each command, which is what lets jobs run headless and
-in parallel.
+skipped (`dangerously_skip_permissions: true`, the web UI's default). Moreover, they are ephemeral and can run headless and in parallel.
 
 ## What you can compare
 

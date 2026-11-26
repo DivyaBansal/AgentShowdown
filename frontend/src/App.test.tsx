@@ -38,7 +38,18 @@ const JOB = {
   tool_failures: null,
   model_requests: null,
   kits: null,
+  telemetry: null,
 };
+
+/** What the inspector drawer reads for whichever job it opens. */
+const PER_JOB_ROUTES = {
+  "/agent-events": {
+    timeline: [],
+    summary: { event_counts: {}, cost_usd: null, tools: {} },
+    events: [],
+  },
+  "/samples": { samples: [] },
+} satisfies Routes;
 
 /** Routes each endpoint the app loads on mount. */
 function stubApi(overrides: Routes = {}) {
@@ -56,6 +67,14 @@ function stubApi(overrides: Routes = {}) {
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
+      // The inspector's per-job reads carry the sandbox name mid-path, so
+      // they are matched by their tail rather than a prefix.
+      const perJob = Object.entries(PER_JOB_ROUTES).find(([suffix]) => url.endsWith(suffix));
+
+      if (perJob !== undefined) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => perJob[1] });
+      }
+
       // Longest prefix wins: "/api/features/meta" must not be answered by
       // the "/api/features" stub just because it was declared first.
       const match = Object.entries(routes)
@@ -73,7 +92,10 @@ function stubApi(overrides: Routes = {}) {
 }
 
 describe("App", () => {
-  beforeEach(() => MockEventSource.reset());
+  beforeEach(() => {
+    MockEventSource.reset();
+    window.localStorage.clear();
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it("renders the masthead", async () => {
@@ -90,16 +112,19 @@ describe("App", () => {
   it("shows a job card once jobs load", async () => {
     stubApi();
     render(<App />);
-    await waitFor(() =>
-      expect(screen.getByLabelText(/arena-f1-claude/i)).toBeInTheDocument(),
-    );
+    expect(await screen.findByRole("article", { name: /arena-f1-claude/i })).toBeInTheDocument();
   });
 
   it("renders the comparison charts alongside a table of every value", async () => {
     // The table is the accessibility backstop: nothing is gated behind a chart.
     stubApi();
     render(<App />);
-    await waitFor(() => expect(screen.getAllByRole("img").length).toBe(7));
+    await screen.findByRole("article", { name: /arena-f1-claude/i });
+
+    fireEvent.click(screen.getByRole("tab", { name: /head to head/i }));
+    expect(screen.getAllByRole("img").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("tab", { name: /^runs$/i }));
     expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: /tokens/i })).toBeInTheDocument();
   });
@@ -135,6 +160,8 @@ describe("App", () => {
 });
 
 describe("App sections", () => {
+  beforeEach(() => window.localStorage.clear());
+
   it("shows the comparison view first", async () => {
     stubApi();
     render(<App />);
@@ -219,5 +246,133 @@ describe("App sections", () => {
       expect(screen.queryByRole("article", { name: /job hide-me/i })).not.toBeInTheDocument(),
     );
     expect(screen.getByRole("article", { name: /job keep-me/i })).toBeInTheDocument();
+  });
+});
+
+describe("Compare navigation", () => {
+  beforeEach(() => {
+    MockEventSource.reset();
+    window.localStorage.clear();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const TWO_JOBS = {
+    jobs: [
+      { ...JOB, sandbox_name: "arena-f1-claude" },
+      { ...JOB, sandbox_name: "arena-f1-codex", agent_id: "codex" },
+    ],
+  };
+
+  it("opens on the contenders, with the other results a tab away", async () => {
+    stubApi();
+    render(<App />);
+
+    expect(await screen.findByRole("tab", { name: /contenders/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(await screen.findByRole("article", { name: /arena-f1-claude/i })).toBeVisible();
+    // Other sections are hidden, not stacked below for scrolling past.
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("remembers the open section across a reload", async () => {
+    stubApi();
+    const { unmount } = render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /^runs$/i }));
+    unmount();
+    render(<App />);
+
+    expect(await screen.findByRole("tab", { name: /^runs$/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("remembers the grouping across a reload", async () => {
+    stubApi();
+    const { unmount } = render(<App />);
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Feature" }));
+    unmount();
+    render(<App />);
+
+    expect(await screen.findByRole("radio", { name: "Feature" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  });
+
+  it("flags contenders waiting on a reply on the tab itself", async () => {
+    stubApi({ "/api/jobs": { jobs: [{ ...JOB, status: "awaiting_input" }] } });
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: /contenders/i })).toHaveTextContent(/1 need input/),
+    );
+  });
+
+  it("inspects a contender in a drawer beside the board", async () => {
+    stubApi();
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /inspect/i }));
+
+    const drawer = screen.getByRole("dialog", { name: /inspect arena-f1-claude/i });
+    expect(drawer).toHaveFocus();
+    expect(screen.getByRole("tab", { name: /activity/i })).toHaveAttribute("aria-selected", "true");
+    // The board stays usable underneath.
+    expect(screen.getByRole("article", { name: /arena-f1-claude/i })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+  });
+
+  it("closes the drawer on Escape", async () => {
+    stubApi();
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /inspect/i }));
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("steps to the next contender without going back to the board", async () => {
+    stubApi({ "/api/jobs": TWO_JOBS });
+    render(<App />);
+
+    const [first] = await screen.findAllByRole("button", { name: /inspect/i });
+    fireEvent.click(first!);
+    expect(screen.getByLabelText(/contender 1 of 2/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /previous contender/i })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /next contender/i }));
+
+    expect(screen.getByRole("dialog", { name: /inspect arena-f1-codex/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /next contender/i })).toBeDisabled();
+  });
+
+  it("inspects a contender from the runs table", async () => {
+    stubApi();
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /^runs$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /inspect arena-f1-claude/i }));
+
+    expect(screen.getByRole("dialog", { name: /inspect arena-f1-claude/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /^runs$/i })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("shows the grouping control with the contenders, not on other tabs", async () => {
+    stubApi();
+    render(<App />);
+
+    expect(await screen.findByRole("radiogroup", { name: /group by/i })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("tab", { name: /^runs$/i }));
+
+    expect(screen.queryByRole("radiogroup", { name: /group by/i })).not.toBeInTheDocument();
   });
 });

@@ -81,6 +81,7 @@ _WRITABLE_COLUMNS: tuple[str, ...] = (
     "tool_failures",
     "model_requests",
     "kits",
+    "telemetry",
 )
 
 # Why a job failed, as a fixed vocabulary rather than the free-text
@@ -153,6 +154,9 @@ _MIGRATIONS: tuple[tuple[str, str], ...] = (
     # a with-skill run is told apart from a plain one. Unlike the full spec
     # (see job_specs) a kit ref is a path, never a secret.
     ("kits", "ALTER TABLE jobs ADD COLUMN kits TEXT"),
+    # Whether the job's run sampled resource usage (0/1). NULL for rows
+    # recorded before this column, where the setting is unknown.
+    ("telemetry", "ALTER TABLE jobs ADD COLUMN telemetry INTEGER"),
 )
 
 # Columns whose values `_backfill_event_metrics` can derive for rows that
@@ -208,12 +212,13 @@ _UPSERT_SQL = """
         tool_failures,
         model_requests,
         kits,
+        telemetry,
         created_at,
         updated_at
     )
     VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?
     )
     ON CONFLICT(sandbox_name) DO UPDATE SET
         feature_id = excluded.feature_id,
@@ -250,6 +255,7 @@ _UPSERT_SQL = """
         tool_failures = excluded.tool_failures,
         model_requests = excluded.model_requests,
         kits = excluded.kits,
+        telemetry = excluded.telemetry,
         updated_at = excluded.updated_at
 """
 
@@ -557,13 +563,51 @@ class StateStore:
                 ).fetchall()
             ]
             for name in names:
-                self.conn.execute("DELETE FROM samples WHERE sandbox_name = ?", (name,))
-                self.conn.execute("DELETE FROM agent_events WHERE sandbox_name = ?", (name,))
-                self.conn.execute("DELETE FROM job_specs WHERE sandbox_name = ?", (name,))
-                self.conn.execute("DELETE FROM agent_launches WHERE sandbox_name = ?", (name,))
+                self._delete_sandbox_records(name)
             self.conn.execute("DELETE FROM jobs WHERE run_id = ?", (run_id,))
             self.conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
         return names
+
+    def delete_job(self, sandbox_name: str) -> bool:
+        """Deletes one job and everything recorded under its sandbox name.
+
+        The rest of its run is untouched. If it was the run's last job, the
+        run row goes too, so no empty run is left listed with nothing in it.
+
+        Args:
+            sandbox_name: The job to delete.
+
+        Returns:
+            Whether a job by that name existed (and so was deleted).
+        """
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT run_id FROM jobs WHERE sandbox_name = ?", (sandbox_name,)
+            ).fetchone()
+            if row is None:
+                return False
+            self._delete_sandbox_records(sandbox_name)
+            self.conn.execute("DELETE FROM jobs WHERE sandbox_name = ?", (sandbox_name,))
+            run_id = row[0]
+            if run_id is not None:
+                left = self.conn.execute(
+                    "SELECT 1 FROM jobs WHERE run_id = ? LIMIT 1", (run_id,)
+                ).fetchone()
+                if left is None:
+                    self.conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+        return True
+
+    def _delete_sandbox_records(self, sandbox_name: str) -> None:
+        """Deletes what is keyed by sandbox name rather than by run.
+
+        A sandbox name is reused by the next run of the same feature and
+        agent, so rows left behind would be read as that next run's history.
+        Call inside a transaction.
+        """
+        self.conn.execute("DELETE FROM samples WHERE sandbox_name = ?", (sandbox_name,))
+        self.conn.execute("DELETE FROM agent_events WHERE sandbox_name = ?", (sandbox_name,))
+        self.conn.execute("DELETE FROM job_specs WHERE sandbox_name = ?", (sandbox_name,))
+        self.conn.execute("DELETE FROM agent_launches WHERE sandbox_name = ?", (sandbox_name,))
 
     def add_sample(self, sample: Sample) -> None:
         """Records one resource sample for a sandbox.

@@ -461,6 +461,46 @@ def delete_run(config: Config, run_id: str) -> list[str]:
     return deleted
 
 
+class UnknownJobError(CommandError):
+    """No job with the requested sandbox name exists."""
+
+
+def delete_job(config: Config, sandbox_name: str) -> None:
+    """Deletes one finished job's history, leaving the rest of its run.
+
+    Refuses anything still live, for the same reasons as `delete_run`: a
+    worker would recreate the row, and a surviving sandbox would be left
+    with no record pointing at it.
+
+    Args:
+        config: Orchestrator config.
+        sandbox_name: The job to delete.
+
+    Raises:
+        UnknownJobError: If no job has this sandbox name.
+        CommandError: If the job is still going or its sandbox still exists.
+    """
+    with StateStore(config.state_db_path) as store:
+        job = store.get(sandbox_name)
+        if job is None:
+            raise UnknownJobError(f"Unknown job: {sandbox_name}")
+        with _claims_lock:
+            claimed = sandbox_name in _claims
+        if claimed or job["status"] in _IN_FLIGHT:
+            raise CommandError(
+                f"'{sandbox_name}' is still active -- wait for it to finish, "
+                f"or stop it, before deleting it."
+            )
+        if sandbox_name in sbx_list():
+            raise CommandError(
+                f"Sandbox '{sandbox_name}' still exists -- remove it first, "
+                f"so it isn't left with no record."
+            )
+        store.delete_job(sandbox_name)
+    log.warning("job_deleted", sandbox_name=sandbox_name, run_id=job["run_id"])
+    bus.publish("job_deleted", sandbox_name=sandbox_name)
+
+
 def _execute_claimed(
     config: Config, sandbox_name: str, failure_event: str, work: Callable[[], None]
 ) -> None:

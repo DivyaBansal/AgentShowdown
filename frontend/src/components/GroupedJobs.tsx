@@ -2,82 +2,78 @@
  *
  * State grouping (the default) surfaces what needs attention first --
  * needs input, then working, then stopped -- ahead of what's already
- * finished. Grouping by run also gives each run its start time and a way
- * to delete its history. This sits below the flat, fully-sortable Standings table,
- * which remains the accessibility backstop for every value a card here
+ * finished. Grouping by run also gives each run its start time; each
+ * finished card can be deleted on its own. The flat, fully-sortable Runs table (its own
+ * tab) remains the accessibility backstop for every value a card here
  * shows; grouping is an added view, not a replacement for it.
+ *
+ * The mode is owned by the caller, which remembers it between visits,
+ * shows `GroupModePicker` above the cards, and walks the same order
+ * when stepping through contenders in the inspector.
  */
 
-import { useState } from "react";
 import type { Job } from "../api";
-import { canStop, formatTimestamp, groupJobs, type GroupMode } from "../lib/jobs";
-import { DeleteRunButton } from "./DeleteRunButton";
+import {
+  GROUP_MODES,
+  GROUP_MODE_LABELS,
+  formatTimestamp,
+  groupJobs,
+  runStartedAt,
+  type GroupMode,
+} from "../lib/jobs";
 import { JobCard } from "./JobCard";
 import { Panel } from "./ui/Panel";
+import { Segmented } from "./ui/Segmented";
 
-const MODE_LABELS: Record<GroupMode, string> = {
-  state: "State",
-  feature: "Feature",
-  agent: "Agent",
-  run: "Run",
-};
+// Cards past this many enter together: a long stagger reads as lag.
+const MAX_STAGGER = 12;
+const STAGGER_MS = 30;
 
-// SAFETY: MODE_LABELS is a Record<GroupMode, string> with no extra keys, so
-// its own keys are exactly the GroupMode members -- Object.keys just widens
-// that to string[] by TypeScript's general design, not because this could
-// actually hold anything else.
-const MODES = Object.keys(MODE_LABELS) as GroupMode[];
-
-/** When a run's first job started, or null if none has yet. ISO-8601 UTC
- *  stamps sort correctly as strings, so no parsing is needed to pick it. */
-function runStartedAt(jobs: Job[]): string | null {
-  let earliest: string | null = null;
-
-  for (const { started_at: stamp } of jobs) {
-    if (stamp !== null && (earliest === null || stamp < earliest)) earliest = stamp;
-  }
-
-  return earliest;
+/** The grouping control: its own row above the cards, label and choices
+ *  side by side. */
+export function GroupModePicker({
+  mode,
+  onChange,
+}: {
+  mode: GroupMode;
+  onChange: (mode: GroupMode) => void;
+}) {
+  return (
+    <div className="group-picker">
+      <span className="eyebrow" aria-hidden="true">
+        Group by
+      </span>
+      <Segmented
+        label="Group by"
+        options={GROUP_MODES.map((m) => ({ value: m, label: GROUP_MODE_LABELS[m] }))}
+        value={mode}
+        onChange={onChange}
+      />
+    </div>
+  );
 }
 
 export function GroupedJobs({
   jobs,
   colorFor,
+  mode,
+  selectedName = null,
   onSelect,
 }: {
   jobs: Job[];
   colorFor: (job: Job) => string;
+  mode: GroupMode;
+  /** The job open in the inspector, marked on its card. */
+  selectedName?: string | null;
   onSelect: (job: Job) => void;
 }) {
-  const [mode, setMode] = useState<GroupMode>("state");
   const groups = groupJobs(jobs, mode);
 
   return (
     <section className="stack stack--tight" aria-label="Contenders">
-      <div className="view-head">
-        <span className="eyebrow">Contenders</span>
-        <div className="toolbar">
-          <label htmlFor="group-mode">Group by</label>
-          <select
-            id="group-mode"
-            value={mode}
-            onChange={(e) =>
-              // SAFETY: every <option> below is rendered from MODES, so the
-              // select's value can only ever be one of those.
-              setMode(e.target.value as GroupMode)
-            }
-          >
-            {MODES.map((m) => (
-              <option key={m} value={m}>
-                {MODE_LABELS[m]}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
       {groups.map((group) => {
         // Jobs recorded before runs existed share a "No run" group, which
-        // has no run to delete.
+        // has no start time of its own.
         const runId = mode === "run" && group.jobs[0]?.run_id ? group.jobs[0].run_id : null;
         const started = runId === null ? null : formatTimestamp(runStartedAt(group.jobs));
 
@@ -92,20 +88,20 @@ export function GroupedJobs({
             }}
             defaultOpen
           >
-            {runId !== null && (
-              <DeleteRunButton
-                runId={runId}
-                disabled={group.jobs.some((j) => canStop(j.status))}
-              />
-            )}
             <div className="job-grid">
-              {group.jobs.map((job) => (
-                <JobCard
+              {group.jobs.map((job, index) => (
+                <div
                   key={job.sandbox_name}
-                  job={job}
-                  color={colorFor(job)}
-                  onSelect={onSelect}
-                />
+                  className="job-grid__item"
+                  style={{ animationDelay: `${Math.min(index, MAX_STAGGER) * STAGGER_MS}ms` }}
+                >
+                  <JobCard
+                    job={job}
+                    color={colorFor(job)}
+                    selected={job.sandbox_name === selectedName}
+                    onSelect={onSelect}
+                  />
+                </div>
               ))}
             </div>
           </Panel>

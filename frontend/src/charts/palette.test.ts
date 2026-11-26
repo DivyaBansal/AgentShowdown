@@ -39,6 +39,7 @@ function job(agent_id: string, run_label: string | null = null, model: string | 
     tool_failures: null,
     model_requests: null,
     kits: null,
+    telemetry: null,
     repo: null,
     log_tail: null,
     launch_s: null,
@@ -130,18 +131,22 @@ describe("assignSeriesColors", () => {
     expect(a.get("claude")).toBe(b.get("claude"));
   });
 
+  it("gives up to eight series a colour each, all different", () => {
+    const keys = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    const colors = assignSeriesColors(keys.map((k) => job(k)));
+
+    expect(new Set(keys.map((k) => colors.get(k))).size).toBe(8);
+    expect(keys.map((k) => colors.get(k))).not.toContain(OVERFLOW_VAR);
+  });
+
   it("folds series past the cap into one de-emphasis colour", () => {
     // Never invent a new hue -- a generated one is indistinguishable under
     // colour-vision deficiency.
-    const colors = assignSeriesColors([
-      job("a"),
-      job("b"),
-      job("c"),
-      job("d"),
-      job("e"),
-    ]);
+    const keys = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+    const colors = assignSeriesColors(keys.map((k) => job(k)));
 
-    expect(colors.get("d")).toBe(OVERFLOW_VAR);
-    expect(colors.get("e")).toBe(OVERFLOW_VAR);
+    expect(colors.get("h")).toBe(SERIES_VARS[7]);
+    expect(colors.get("i")).toBe(OVERFLOW_VAR);
+    expect(colors.get("j")).toBe(OVERFLOW_VAR);
   });
 });

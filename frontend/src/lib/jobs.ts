@@ -1,7 +1,7 @@
 /** Presentation helpers shared by every view of a job.
  *
  * One place decides how a status is coloured, how a duration reads, and how
- * a missing metric is told apart from a zero, so the standings table and the
+ * a missing metric is told apart from a zero, so the runs table and the
  * contender cards can never disagree.
  */
 
@@ -113,15 +113,6 @@ export function latestActivity(job: Pick<Job, "detail" | "log_tail">): string | 
   return lines.length > 0 ? (lines[lines.length - 1] ?? null) : null;
 }
 
-/** Lower is better. Finished beats in-flight beats failed. */
-function outcomeRank(status: string): number {
-  if (status === "succeeded") return 0;
-
-  if (FAILED.has(status)) return 2;
-
-  return 1;
-}
-
 export function formatDuration(seconds: number | null): string | null {
   if (seconds === null) return null;
 
@@ -186,22 +177,6 @@ export function formatDiff(job: Pick<Job, "lines_added" | "lines_removed">): str
   return `+${job.lines_added ?? 0} / −${job.lines_removed ?? 0}`;
 }
 
-/** Compares two jobs *on the same feature* for placement.
- *
- * Outcome first, then passing tests, then wall-clock time. A missing
- * duration sorts last rather than counting as instant.
- */
-export function compareForPlacement(a: Job, b: Job): number {
-  const outcome = outcomeRank(a.status) - outcomeRank(b.status);
-
-  if (outcome !== 0) return outcome;
-  const tests = (b.tests_passed ?? -1) - (a.tests_passed ?? -1);
-
-  if (tests !== 0) return tests;
-
-  return compareNullableAscending(a.duration_seconds, b.duration_seconds);
-}
-
 /** Ascending, with nulls after every real value (and equal to each other). */
 export function compareNullableAscending(a: number | null, b: number | null): number {
   if (a === null && b === null) return 0;
@@ -261,12 +236,20 @@ export interface JobGroup {
 
 export type GroupMode = "state" | "feature" | "agent" | "run";
 
+export const GROUP_MODE_LABELS: Record<GroupMode, string> = {
+  state: "State",
+  feature: "Feature",
+  agent: "Agent",
+  run: "Run",
+};
+
+export const GROUP_MODES: readonly GroupMode[] = ["state", "feature", "agent", "run"];
+
 /** Groups jobs for display, ordered so the most relevant group leads.
  *
  * `"state"` orders by urgency (see `STATE_BUCKET_ORDER`) and omits empty
- * buckets. The other axes group by an id already on the job and sort
- * groups alphabetically, since there's no inherent priority between two
- * features, two agents or two runs.
+ * buckets. `"run"` puts the latest run first. Features and agents have no
+ * inherent order between them, so they sort alphabetically.
  *
  * Args:
  *   jobs: The jobs to group (already filtered to whatever repo is shown).
@@ -315,13 +298,42 @@ export function groupJobs(jobs: Job[], mode: GroupMode): JobGroup[] {
     byKey.set(key, list);
   }
 
+  // Runs are a history, so the latest leads; the rest have no inherent
+  // order and go alphabetically. A run that never started sorts by when it
+  // was launched instead; the jobs recorded without a run go last.
+  const runSortKey = (key: string, list: Job[]): string =>
+    key === "" ? "" : (runStartedAt(list) ?? earliest(list.map((j) => j.created_at)) ?? "");
+
+  const order =
+    mode === "run"
+      ? ([a, la]: [string, Job[]], [b, lb]: [string, Job[]]) =>
+          runSortKey(b, lb).localeCompare(runSortKey(a, la))
+      : ([a]: [string, Job[]], [b]: [string, Job[]]) => a.localeCompare(b);
+
   return [...byKey.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(order)
     .map(([key, list]) => ({
       key: key === "" ? "(none)" : key,
       label: mode === "run" ? runLabel(key, list) : key,
       jobs: list,
     }));
+}
+
+/** The smallest of some ISO-8601 UTC stamps, which sort correctly as
+ *  strings; null when there are none. */
+function earliest(stamps: (string | null)[]): string | null {
+  let first: string | null = null;
+
+  for (const stamp of stamps) {
+    if (stamp && (first === null || stamp < first)) first = stamp;
+  }
+
+  return first;
+}
+
+/** When a run's first job started, or null if none has yet. */
+export function runStartedAt(jobs: Job[]): string | null {
+  return earliest(jobs.map((j) => j.started_at));
 }
 
 /** A run's heading: which feature it ran, since a bare `run-<hex>` says
@@ -332,29 +344,4 @@ function runLabel(runId: string, jobs: Job[]): string {
   const features = [...new Set(jobs.map((j) => j.feature_id))].sort();
 
   return `${features.join(", ")} · ${runId}`;
-}
-
-/** Placement of each job within its own feature, keyed by sandbox name.
- *
- * Ranking across features would compare different tasks, so each feature
- * is its own bracket and numbering restarts at 1.
- */
-export function placements(jobs: Job[]): Map<string, number> {
-  const byFeature = new Map<string, Job[]>();
-
-  for (const job of jobs) {
-    const list = byFeature.get(job.feature_id) ?? [];
-    list.push(job);
-    byFeature.set(job.feature_id, list);
-  }
-
-  const result = new Map<string, number>();
-
-  for (const list of byFeature.values()) {
-    [...list].sort(compareForPlacement).forEach((job, index) => {
-      result.set(job.sandbox_name, index + 1);
-    });
-  }
-
-  return result;
 }

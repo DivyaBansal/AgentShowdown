@@ -107,12 +107,18 @@ function Sparkline({ series }: { series: Series }) {
 
 export function TelemetryChart({
   samples,
-  enabled,
+  telemetry,
+  live,
 }: {
   samples: Sample[];
-  enabled: boolean;
+  /** The run's setting; null when the job predates recording it. */
+  telemetry: boolean | null;
+  /** Whether the job is still running, so a sample may yet arrive. */
+  live: boolean;
 }) {
-  if (!enabled) {
+  // Samples settle it whatever the setting says, and a job recorded before
+  // the setting was can only be judged by them.
+  if (samples.length === 0 && telemetry !== true) {
     return (
       <p className="hint">
         Telemetry is off for this run. Enabling it costs one <code>sbx exec</code>{" "}
@@ -123,7 +129,14 @@ export function TelemetryChart({
   }
 
   if (samples.length === 0) {
-    return <p className="hint">Waiting for the first sample…</p>;
+    return live ? (
+      <p className="hint">Waiting for the first sample…</p>
+    ) : (
+      <p className="hint">
+        Telemetry was on, but no samples were recorded: the sandbox stopped before
+        the first one.
+      </p>
+    );
   }
 
   const memLimit = samples.map((s) => s.mem_limit_bytes).filter((v): v is number => v !== null).pop() ?? null;
