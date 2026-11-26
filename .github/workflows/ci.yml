@@ -20,8 +20,8 @@ jobs:
   lint-and-type:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
         with:
           version: ${{ env.UV_VERSION }}
       - name: Install deps (locked)
@@ -40,10 +40,10 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           fetch-depth: 0  # needed for full-history secret scanning
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
         with:
           version: ${{ env.UV_VERSION }}
       - name: Install deps (locked)
@@ -51,9 +51,23 @@ jobs:
       - name: pip-audit (known CVEs in dependencies)
         run: uv run pip-audit
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7  # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Runs on PRs, unlike the image scan in `build` (main only), so
+      # Dockerfile regressions are caught before merge.
+      - name: Dockerfile lint
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387  # v3.5.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+      - name: Dockerfile misconfiguration scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: 1
 
   # ---------- Tests: unit + property-based, coverage gate ----------
   test:
@@ -63,8 +77,8 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
         with:
           version: ${{ env.UV_VERSION }}
       - name: Install deps (locked)
@@ -72,7 +86,7 @@ jobs:
       - name: Run tests with coverage gate
         run: uv run pytest
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: coverage-${{ matrix.python-version }}
           path: coverage.xml
@@ -84,8 +98,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: "22"
           cache: "npm"
@@ -103,7 +117,7 @@ jobs:
       - name: Build
         run: npm run build
       - name: Upload frontend build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: frontend-dist
           path: frontend/dist
@@ -117,12 +131,12 @@ jobs:
       contents: read
       id-token: write  # for keyless signing / trusted publishing
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
         with:
           version: ${{ env.UV_VERSION }}
       - name: Download frontend build
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: frontend-dist
           path: frontend/dist
@@ -132,7 +146,7 @@ jobs:
         run: |
           uvx cyclonedx-py environment -o sbom.json
       - name: Build container image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
         with:
           context: .
           load: true
@@ -141,12 +155,24 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: agentshowdown:ci
+          # secret: catches credentials baked into a layer;
+          # misconfig: checks the image config (e.g. running as root).
+          scanners: vuln,secret,misconfig
           severity: CRITICAL,HIGH
           exit-code: 1
+      - name: Container SBOM
+        # sbom.json above covers the Python environment only; this one
+        # covers what actually ships — OS packages included.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: agentshowdown:ci
+          format: cyclonedx
+          output: sbom-image.json
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: dist-and-sbom
           path: |
             dist/*
             sbom.json
+            sbom-image.json

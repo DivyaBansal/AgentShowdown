@@ -40,10 +40,12 @@ that violates it, so following it up front saves round trips.
 - No `any` in TypeScript — Oxlint's `typescript/no-explicit-any`
   is a hard error, not a warning. If you don't know the type, define an
   interface or use `unknown` and narrow it.
-- The API client (`frontend/src/api.ts`) is the *only* place `fetch`
+- The API client (`frontend/src/api/`) is the *only* place `fetch`
   calls to the backend live. Don't call `fetch` directly from components
-  — add a typed function there and import it, so error handling and
-  types stay centralized.
+  — add a typed function to the module for its area (`jobs`, `setup`,
+  `ask`, `models`), built on the shared `request` wrapper in `client.ts`,
+  and import it from `../api`, so error handling and types stay
+  centralized.
 - Every new component gets a test in `*.test.tsx` using Testing Library,
   querying by role/label like the existing `App.test.tsx` — not by CSS
   class or test-id unless there's no accessible role available.

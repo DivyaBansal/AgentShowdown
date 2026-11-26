@@ -10,3 +10,11 @@ dist/
 .mypy_cache/
 .ruff_cache/
 coverage.xml
+# Secrets and local-only state: never send to the build daemon, so a
+# future `COPY . .` can't bake them into a layer.
+.env
+.env.*
+!.env.example
+.claude/
+graphify-out/
+tests/
