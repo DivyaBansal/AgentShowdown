@@ -1,0 +1,6 @@
+# Verified false positives only — one fingerprint per finding, with the reason.
+# Fingerprint format: <commit>:<file>:<rule>:<line>
+
+# `_event("codex.api_request", duration_ms="250")` — a test fixture; "250" is a
+# duration, matched by generic-api-key only because "api" precedes a string.
+26aee8a3267beda811d4719ea692662bbac8bd25:tests/orchestrator/test_agent_otel.py:generic-api-key:156
