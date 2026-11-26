@@ -126,10 +126,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     needs: [security, test, frontend]
-    if: github.ref == 'refs/heads/main'
+    # Runs on PRs too, so the container scan catches problems before merge
+    # rather than after. Nothing here publishes or needs secrets.
     permissions:
       contents: read
-      id-token: write  # for keyless signing / trusted publishing
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
