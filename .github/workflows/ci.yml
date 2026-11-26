@@ -159,6 +159,10 @@ jobs:
           # misconfig: checks the image config (e.g. running as root).
           scanners: vuln,secret,misconfig
           severity: CRITICAL,HIGH
+          # Block only on findings that have a fix. Unfixed base-image CVEs
+          # (Debian "no-dsa"/postponed) can't be acted on; the nightly run
+          # turns red as soon as Debian ships a fix for any of them.
+          ignore-unfixed: true
           exit-code: 1
       - name: Container SBOM
         # sbom.json above covers the Python environment only; this one
