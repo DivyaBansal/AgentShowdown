@@ -178,6 +178,16 @@ class AgentEventsQuery(BaseModel):
     latest_turn: bool = False
 
 
+class ApproachQuery(BaseModel):
+    """Query params for ``GET /jobs/{sandbox_name}/approach``."""
+
+    limit: int = Field(default=5000, ge=1, le=5000)
+    # Defaults to the current turn, unlike /agent-events: an approach is
+    # compared against other jobs' single attempts, and a resumed sandbox's
+    # earlier turns would make its run look longer and busier than it was.
+    latest_turn: bool = True
+
+
 class RemoveSandboxRequest(BaseModel):
     """Confirms removing one sandbox.
 

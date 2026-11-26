@@ -358,3 +358,28 @@ def test_prompts_and_unknown_events_still_appear() -> None:
     assert (entries[1].kind, entries[1].title) == ("other", "startup_phase")
     # No CLI time: falls back to when the receiver got it.
     assert entries[1].at == "2026-10-22T10:00:09Z"
+
+
+# codex's code mode logs each call twice: the tool itself, then an `exec`
+# wrapper whose input is the script that called it. Seen on codex-cli 0.149.1.
+_CODE_MODE_PAIR = [
+    _event("codex.tool_result", tool_name="exec_command", success="true", arguments='{"cmd":"ls"}'),
+    _event(
+        "codex.tool_result",
+        tool_name="exec",
+        success="true",
+        arguments='const r = await tools.exec_command({cmd:"ls"}); text(r)',
+    ),
+]
+
+
+def test_codex_code_mode_wrappers_are_not_counted_as_tool_calls() -> None:
+    activity = agent_otel.activity_from_events("codex", _CODE_MODE_PAIR)
+
+    assert activity.tool_calls == 1
+
+
+def test_codex_code_mode_wrappers_are_left_out_of_the_tool_table() -> None:
+    tools = agent_otel.summarize_events(_CODE_MODE_PAIR)["tools"]
+
+    assert tools == {"exec_command": {"calls": 1, "failures": 0, "duration_ms": 0}}

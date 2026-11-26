@@ -120,6 +120,15 @@ button:disabled {
   color: var(--text);
 }
 
+/* A quiet button used as a toggle (aria-pressed) shows which option is on;
+   without this the chosen filter looked the same as the others. */
+.btn--quiet[aria-pressed="true"] {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  color: var(--text);
+  font-weight: 600;
+}
+
 /* --- fields ------------------------------------------------------------ */
 
 form.controls {

@@ -61,6 +61,13 @@ Each finished job reports its diff size, whether tests and lint pass, wall-clock
 and agent time, token usage (input counts prompt-cache reads, so agents compare
 like for like), tool calls and model requests, and which skill kit it carried.
 
+**How they worked** shows each contender's tool calls side by side, on a shared
+time axis (live while a job runs): every call is sorted into a phase (explore,
+edit, verify, setup, git, web) by what it did, so claude's `Grep`/`Edit` and
+codex's shell commands compare directly. Alongside: calls before the first edit,
+edit → verify cycles, failures, and which files each agent touched. Needs the
+agent's telemetry, so `claude` and `codex` only.
+
 ## Why Docker Sandboxes?
 
 Each sandbox is a microVM with its own kernel, not a container that shares
