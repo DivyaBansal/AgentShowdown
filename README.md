@@ -225,10 +225,6 @@ uv run python -m backend.orchestrator \
 uv run python -m backend.orchestrator --config demo/langlearn/config.yaml status --watch
 ```
 
-> [!WARNING]
-> AgentShowdown has no authentication and runs commands on the host. Bind it to
-> `127.0.0.1` and never expose the port to a network.
-
 ## Configuration
 
 Two YAML files, stored in `<repo>/.agentshowdown/` when you use the UI. Working
