@@ -10,7 +10,12 @@ import time
 from typing import TYPE_CHECKING, Literal
 
 from backend.logging import log
-from backend.orchestrator.agent_otel import exports_otel, prefer_otel_usage, usage_from_events
+from backend.orchestrator.agent_otel import (
+    activity_from_events,
+    exports_otel,
+    prefer_otel_usage,
+    usage_from_events,
+)
 from backend.orchestrator.events import bus
 from backend.orchestrator.metrics import parse_diff_numstat, parse_usage
 from backend.orchestrator.prompt import MAX_QUESTION_OPTIONS
@@ -397,22 +402,29 @@ def _finalize_success(
         # OTel events first, the run log as the fallback: the events cover
         # every request in the turn, while the log only has what the CLI
         # printed -- and nothing at all if it died before printing it.
-        otel_usage = usage_from_events(
-            agent_id,
-            store.get_agent_events(sandbox_name, since=store.get_agent_launched_at(sandbox_name)),
+        events = store.get_agent_events(
+            sandbox_name, since=store.get_agent_launched_at(sandbox_name)
         )
+        otel_usage = usage_from_events(agent_id, events)
         usage = prefer_otel_usage(otel_usage, parse_usage(run_log, agent_id))
+        # Only the events can say this: no CLI prints a tool-call count.
+        activity = activity_from_events(agent_id, events)
         log.info(
             "usage_recorded",
             source="otel" if not otel_usage.is_empty else "log",
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
+            tool_calls=activity.tool_calls,
         )
         metrics: dict[str, object] = {
             "branch": actual_branch,
             "input_tokens": usage.input_tokens,
+            "cached_input_tokens": usage.cached_input_tokens,
             "output_tokens": usage.output_tokens,
             "num_turns": usage.num_turns,
+            "tool_calls": activity.tool_calls,
+            "tool_failures": activity.tool_failures,
+            "model_requests": activity.model_requests,
         }
 
         # Fetch (not push) so the work can be verified on the host before any

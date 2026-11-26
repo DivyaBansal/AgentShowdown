@@ -17,6 +17,13 @@ Coverage is deliberately partial, and callers must not paper over that:
 ``None`` means "not reported" and must render as "no data", never as ``0``: a
 false zero makes an agent look free in a cost or token comparison.
 
+``input_tokens`` counts every prompt token the model processed, *including*
+prompt-cache reads and writes, so the number means the same thing for every
+agent. codex already reports it that way; claude reports cache tokens apart
+from ``input_tokens``, so they are added back in here. Left out, a claude run
+that read 500K tokens from cache would chart as a few hundred input tokens
+next to codex's full count.
+
 The parser deliberately searches for token fields wherever they appear rather
 than matching a fixed event shape. These CLIs change their JSON between
 releases, and a metrics gap is acceptable while a crashed job is not -- so
@@ -35,6 +42,11 @@ USAGE_CAPABLE_AGENTS = ("claude", "codex")
 _INPUT_KEYS = ("input_tokens", "prompt_tokens", "input")
 _OUTPUT_KEYS = ("output_tokens", "completion_tokens", "output")
 _TURN_KEYS = ("num_turns", "turns")
+# claude's result object reports cache traffic apart from `input_tokens`.
+_CLAUDE_CACHE_READ_KEYS = ("cache_read_input_tokens",)
+_CLAUDE_CACHE_WRITE_KEYS = ("cache_creation_input_tokens",)
+# codex's usage already counts these inside `input_tokens`.
+_CODEX_CACHED_KEYS = ("cached_input_tokens",)
 
 # `git diff --numstat` emits: added \t removed \t path
 _NUMSTAT_FIELDS = 3
@@ -47,11 +59,18 @@ class Usage:
     input_tokens: int | None = None
     output_tokens: int | None = None
     num_turns: int | None = None
+    # The part of `input_tokens` served from the prompt cache.
+    cached_input_tokens: int | None = None
 
     @property
     def is_empty(self) -> bool:
         """Whether nothing at all was reported."""
-        return self.input_tokens is None and self.output_tokens is None and self.num_turns is None
+        return (
+            self.input_tokens is None
+            and self.output_tokens is None
+            and self.num_turns is None
+            and self.cached_input_tokens is None
+        )
 
 
 def iter_json_objects(log_text: str) -> list[dict]:
@@ -134,10 +153,19 @@ def parse_usage(log_text: str, agent_id: str) -> Usage:
     objects = iter_json_objects(log_text)
     if not objects:
         return Usage()
+    input_tokens = _last_int(objects, _INPUT_KEYS)
+    if agent_id == "claude":
+        cached = _last_int(objects, _CLAUDE_CACHE_READ_KEYS)
+        written = _last_int(objects, _CLAUDE_CACHE_WRITE_KEYS)
+        if input_tokens is not None:
+            input_tokens += (cached or 0) + (written or 0)
+    else:
+        cached = _last_int(objects, _CODEX_CACHED_KEYS)
     return Usage(
-        input_tokens=_last_int(objects, _INPUT_KEYS),
+        input_tokens=input_tokens,
         output_tokens=_last_int(objects, _OUTPUT_KEYS),
         num_turns=_last_int(objects, _TURN_KEYS),
+        cached_input_tokens=cached,
     )
 
 

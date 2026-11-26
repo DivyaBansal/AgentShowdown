@@ -6,16 +6,20 @@ import {
   canStop,
   compareNullableAscending,
   elapsedSeconds,
+  endToEndSeconds,
   formatDiff,
   formatDuration,
   formatTimestamp,
   groupJobs,
+  jobKits,
+  kitName,
   latestActivity,
   placements,
   questionOptions,
   stateBucket,
   statusTone,
   totalTokens,
+  usesKit,
 } from "./jobs";
 
 function job(overrides: Partial<Job> = {}): Job {
@@ -43,6 +47,11 @@ function job(overrides: Partial<Job> = {}): Job {
     input_tokens: null,
     output_tokens: null,
     num_turns: null,
+    cached_input_tokens: null,
+    tool_calls: null,
+    tool_failures: null,
+    model_requests: null,
+    kits: null,
     repo: null,
     log_tail: null,
     launch_s: null,
@@ -264,6 +273,15 @@ describe("groupJobs", () => {
     expect(groups[0]?.label).toBe("No run");
   });
 
+  it("heads a run's group with the feature it ran", () => {
+    const groups = groupJobs(
+      [job({ sandbox_name: "a", run_id: "run-1a2b", feature_id: "build-ui" })],
+      "run",
+    );
+
+    expect(groups[0]?.label).toBe("build-ui · run-1a2b");
+  });
+
   it("never returns a group with no jobs in it", () => {
     const groups = groupJobs([job({ status: "succeeded" })], "state");
     expect(groups.every((g) => g.jobs.length > 0)).toBe(true);
@@ -320,5 +338,33 @@ describe("questionOptions", () => {
 
   it("drops anything that isn't a string", () => {
     expect(questionOptions(job({ question_options: '["A", 2, null, "B"]' }))).toEqual(["A", "B"]);
+  });
+});
+
+describe("endToEndSeconds", () => {
+  it("adds sandbox start, verify and push to the agent's own time", () => {
+    expect(endToEndSeconds({ launch_s: 10, agent_s: 50, verify_s: 1, push_s: 4 })).toBe(65);
+  });
+
+  it("is unknown until the agent phase has a time", () => {
+    expect(endToEndSeconds({ launch_s: 10, agent_s: null, verify_s: null, push_s: null })).toBe(
+      null,
+    );
+  });
+});
+
+describe("jobKits", () => {
+  it("decodes the kit list, and treats a missing or malformed one as unknown", () => {
+    expect(jobKits({ kits: '["./kits/ui"]' })).toEqual(["./kits/ui"]);
+    expect(jobKits({ kits: "[]" })).toEqual([]);
+    expect(jobKits({ kits: null })).toBeNull();
+    expect(jobKits({ kits: "{oops" })).toBeNull();
+  });
+
+  it("tells a kit run from a plain one, or says it doesn't know", () => {
+    expect(usesKit({ kits: '["k"]' })).toBe(true);
+    expect(usesKit({ kits: "[]" })).toBe(false);
+    expect(usesKit({ kits: null })).toBeNull();
+    expect(kitName("/home/x/demo/kits/frontend-design")).toBe("frontend-design");
   });
 });

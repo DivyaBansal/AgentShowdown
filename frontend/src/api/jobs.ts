@@ -28,9 +28,22 @@ export interface Job {
   files_changed: number | null;
   lines_added: number | null;
   lines_removed: number | null;
+  /** Every prompt token the model processed, prompt-cache reads and writes
+   *  included, so it means the same for every agent. */
   input_tokens: number | null;
+  /** The part of `input_tokens` served from the prompt cache. */
+  cached_input_tokens: number | null;
   output_tokens: number | null;
   num_turns: number | null;
+  /** Counted from the agent's own OTel events (claude and codex only);
+   *  null when it exported none, which is not the same as zero. */
+  tool_calls: number | null;
+  tool_failures: number | null;
+  /** Completed model round trips, counted where token usage is reported. */
+  model_requests: number | null;
+  /** JSON-encoded list of the sbx kit refs the job ran with; null for rows
+   *  recorded before kits were. Decode with `jobKits` in lib/jobs. */
+  kits: string | null;
   /** Which repo the job ran against; null for rows recorded before one
    *  shared database held every workspace. */
   repo: string | null;

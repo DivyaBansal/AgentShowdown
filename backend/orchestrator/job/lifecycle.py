@@ -52,8 +52,12 @@ _ATTEMPT_RESET: dict[str, object] = {
     "finished_at": None,
     "duration_seconds": None,
     "input_tokens": None,
+    "cached_input_tokens": None,
     "output_tokens": None,
     "num_turns": None,
+    "tool_calls": None,
+    "tool_failures": None,
+    "model_requests": None,
     "files_changed": None,
     "lines_added": None,
     "lines_removed": None,
@@ -151,6 +155,7 @@ def run_job(config: Config, feature: Feature, spec: AgentSpec) -> None:
         repo=host_repo_path(config),
         cpus=config.cpus,
         memory_limit=config.memory,
+        kits=json.dumps(resolve_kit_paths(spec, profile)),
     )
     store.set_spec(sandbox_name, spec_to_json(spec))
 

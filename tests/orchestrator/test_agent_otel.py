@@ -7,6 +7,8 @@ import tomllib
 import pytest
 from backend.orchestrator import agent_otel
 from backend.orchestrator.agent_otel import (
+    Activity,
+    activity_from_events,
     codex_otel_overrides,
     exports_otel,
     logs_endpoint,
@@ -116,6 +118,59 @@ def test_codex_usage_reads_token_counts_wherever_they_are_reported() -> None:
     ]
 
     assert usage_from_events("codex", events) == Usage(input_tokens=310, output_tokens=41)
+
+
+def test_claude_usage_counts_cache_tokens_as_input_like_codex_does() -> None:
+    events = [
+        _event(
+            "claude_code.api_request",
+            input_tokens="9",
+            cache_read_tokens="14478",
+            cache_creation_tokens="14296",
+            output_tokens="240",
+        ),
+        _event("claude_code.api_request", input_tokens="1", output_tokens="2"),
+    ]
+
+    usage = usage_from_events("claude", events)
+
+    assert usage == Usage(input_tokens=28_784, output_tokens=242, cached_input_tokens=14_478)
+
+
+def test_codex_usage_reports_the_cached_part_of_its_input() -> None:
+    attributes = {**_counts("300", "40"), "cached_token_count": "200"}
+    events = [_event("codex.sse_event", **attributes)]
+
+    assert usage_from_events("codex", events).cached_input_tokens == 200
+
+
+def test_activity_counts_tool_calls_failures_and_model_requests() -> None:
+    claude = [
+        _event("claude_code.api_request", input_tokens="1"),
+        _event("claude_code.tool_result", tool_name="Bash", success="true"),
+        _event("claude_code.tool_result", tool_name="Edit", success="false"),
+        _event("claude_code.api_request", input_tokens="1"),
+        _event("claude_code.tool_decision", tool_name="Bash"),
+    ]
+    codex = [
+        _event("codex.api_request", duration_ms="250"),
+        _event("codex.sse_event", **_counts("300", "40")),
+        _event("codex.tool_result", tool_name="exec_command", success="true"),
+    ]
+
+    assert activity_from_events("claude", claude) == Activity(
+        tool_calls=2, tool_failures=1, model_requests=2
+    )
+    assert activity_from_events("codex", codex) == Activity(
+        tool_calls=1, tool_failures=0, model_requests=1
+    )
+
+
+def test_no_events_is_unknown_activity_but_events_without_tools_are_zero() -> None:
+    assert activity_from_events("claude", []) == Activity()
+    assert activity_from_events("claude", [_event("claude_code.user_prompt")]) == Activity(
+        tool_calls=0, tool_failures=0, model_requests=0
+    )
 
 
 def test_no_token_events_is_no_data_rather_than_zero() -> None:

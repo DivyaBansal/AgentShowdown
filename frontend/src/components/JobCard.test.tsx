@@ -29,6 +29,11 @@ function job(overrides: Partial<Job> = {}): Job {
     input_tokens: 900,
     output_tokens: 80,
     num_turns: 4,
+    cached_input_tokens: null,
+    tool_calls: null,
+    tool_failures: null,
+    model_requests: null,
+    kits: null,
     repo: null,
     log_tail: null,
     launch_s: null,
@@ -155,7 +160,7 @@ describe("JobCard", () => {
 
   it("distinguishes two runs of the same agent by run label", () => {
     render(<JobCard job={job({ run_label: "b" })} color="var(--series-1)" />);
-    expect(screen.getByText(/claude · b/)).toBeInTheDocument();
+    expect(screen.getByText("claude · claude-haiku-4-5 · b")).toBeInTheDocument();
   });
 
   it("links to the pull request only when one was opened", () => {
@@ -164,6 +169,16 @@ describe("JobCard", () => {
 
     rerender(<JobCard job={job({ pr_url: "https://example.com/pr/1" })} color="c" />);
     expect(screen.getByRole("link", { name: /pull request/i })).toBeInTheDocument();
+  });
+});
+
+describe("JobCard tool calls", () => {
+  it("shows the tool-call count, and a dash when the agent reported none", () => {
+    const { rerender } = render(<JobCard job={job({ tool_calls: 17 })} color="c" />);
+    expect(screen.getByText("Tool calls").nextElementSibling).toHaveTextContent("17");
+
+    rerender(<JobCard job={job({ tool_calls: null })} color="c" />);
+    expect(screen.getByText("Tool calls").nextElementSibling).not.toHaveTextContent("0");
   });
 });
 

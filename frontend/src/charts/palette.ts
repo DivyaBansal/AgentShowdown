@@ -1,9 +1,15 @@
 /** Series colour assignment.
  *
  * Colour follows the *entity*, never its rank: a job's colour is derived
- * from its own identity (agent + run label), so filtering the list or
+ * from its own identity (agent + model), so filtering the list or
  * re-sorting it never repaints the survivors. Assigning by array index --
  * the obvious implementation -- would do exactly that.
+ *
+ * The colour identity is deliberately coarser than the series: two run
+ * labels of the same agent and model (typically "plain" and "with-skill")
+ * share a hue, and the charts tell them apart by texture and by name. That
+ * keeps each pair visibly a pair, and keeps a 3-model x 2-variant
+ * comparison inside the three validated slots instead of greying half of it.
  *
  * Slots are the validated categorical palette, taken in fixed order and
  * never cycled to invent a ninth hue. Past the cap, series fold into a
@@ -24,14 +30,31 @@ export const OVERFLOW_VAR = "var(--de-emphasis)";
 
 type SeriesIdentity = Pick<Job, "agent_id" | "run_label" | "model">;
 
-/** Stable identity for a job's series: agent plus the user's run_label when
- *  one was given, else agent plus model. The same agent under two models or
- *  two run_labels is two distinct series -- that difference is usually the
- *  very thing being compared. */
-export function seriesKey(job: SeriesIdentity): string {
-  const qualifier = job.run_label || job.model;
+// Mirrors backend `_INVALID_LABEL_CHARS`: an unlabelled job is given a
+// name-safe form of its model as its run label.
+const INVALID_LABEL_CHARS = /[^A-Za-z0-9.-]+|\.{2,}/g;
 
-  return qualifier ? `${job.agent_id} · ${qualifier}` : job.agent_id;
+/** Whether `label` is just the one the backend derived from `model`, which
+ *  would only repeat the model in the series name. */
+function isDefaultLabel(label: string, model: string | null): boolean {
+  return model !== null && label === model.replace(INVALID_LABEL_CHARS, "-");
+}
+
+/** Which colour a job wears: its agent plus model. */
+export function colorKey(job: SeriesIdentity): string {
+  return job.model ? `${job.agent_id} · ${job.model}` : job.agent_id;
+}
+
+/** Stable, readable identity for a job's series: agent, model, then the
+ *  user's run_label when it says something the model doesn't. The same
+ *  agent under two models or two run_labels is two distinct series -- that
+ *  difference is usually the very thing being compared. */
+export function seriesKey(job: SeriesIdentity): string {
+  const label = job.run_label;
+
+  if (!label || isDefaultLabel(label, job.model)) return colorKey(job);
+
+  return `${colorKey(job)} · ${label}`;
 }
 
 /** Builds a stable key -> colour map from the COMPLETE set of jobs.
@@ -45,7 +68,7 @@ export function seriesKey(job: SeriesIdentity): string {
  * `assignSeriesColorsFor` below makes that shape hard to get wrong.
  */
 export function assignSeriesColors(roster: Job[]): Map<string, string> {
-  const keys = [...new Set(roster.map(seriesKey))].sort((a, b) => a.localeCompare(b));
+  const keys = [...new Set(roster.map(colorKey))].sort((a, b) => a.localeCompare(b));
   const colors = new Map<string, string>();
   keys.forEach((key, index) => {
     colors.set(key, SERIES_VARS[index] ?? OVERFLOW_VAR);
@@ -65,5 +88,5 @@ export function assignSeriesColorsFor(
 ): (job: SeriesIdentity) => string {
   const colors = assignSeriesColors(roster);
 
-  return (job) => colors.get(seriesKey(job)) ?? OVERFLOW_VAR;
+  return (job) => colors.get(colorKey(job)) ?? OVERFLOW_VAR;
 }

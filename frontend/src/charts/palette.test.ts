@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   assignSeriesColors,
   assignSeriesColorsFor,
+  colorKey,
   seriesKey,
   SERIES_VARS,
   OVERFLOW_VAR,
@@ -33,6 +34,11 @@ function job(agent_id: string, run_label: string | null = null, model: string | 
     input_tokens: null,
     output_tokens: null,
     num_turns: null,
+    cached_input_tokens: null,
+    tool_calls: null,
+    tool_failures: null,
+    model_requests: null,
+    kits: null,
     repo: null,
     log_tail: null,
     launch_s: null,
@@ -57,8 +63,35 @@ describe("seriesKey", () => {
     expect(seriesKey(job("claude", null, "sonnet"))).toBe("claude · sonnet");
   });
 
-  it("prefers the user's run label over the model", () => {
-    expect(seriesKey(job("codex", "luna", "gpt-5"))).toBe("codex · luna");
+  it("names both the model and the user's run label", () => {
+    expect(seriesKey(job("claude", "with-skill", "claude-haiku-5-5"))).toBe(
+      "claude · claude-haiku-5-5 · with-skill",
+    );
+  });
+
+  it("does not repeat a run label that was only derived from the model", () => {
+    expect(seriesKey(job("codex", "qwen3.5-122b", "qwen3.5:122b"))).toBe("codex · qwen3.5:122b");
+  });
+});
+
+describe("colorKey", () => {
+  it("gives two run labels of one agent and model the same colour", () => {
+    const colorFor = assignSeriesColorsFor([
+      job("claude", "plain", "haiku"),
+      job("claude", "with-skill", "haiku"),
+      job("claude", "plain", "sonnet"),
+    ]);
+
+    expect(colorFor(job("claude", "plain", "haiku"))).toBe(
+      colorFor(job("claude", "with-skill", "haiku")),
+    );
+    expect(colorFor(job("claude", "plain", "haiku"))).not.toBe(
+      colorFor(job("claude", "plain", "sonnet")),
+    );
+  });
+
+  it("ignores the run label", () => {
+    expect(colorKey(job("codex", "luna", "gpt-5"))).toBe("codex · gpt-5");
   });
 });
 

@@ -122,6 +122,7 @@ export function JobCard({
         />
         <Metric label="Duration" value={formatDuration(elapsedSeconds(job, now))} />
         <Metric label="Tokens" value={tokens === null ? null : `${tokens}`} />
+        <Metric label="Tool calls" value={job.tool_calls === null ? null : `${job.tool_calls}`} />
         <Metric label="Diff" value={formatDiff(job)} />
         <Metric label="Branch" value={job.branch} />
       </dl>

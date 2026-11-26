@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 
 from backend.logging import log
@@ -12,6 +13,7 @@ from backend.orchestrator.config import (
     Feature,
     host_repo_path,
     resolve_env,
+    resolve_kit_paths,
     resolve_model,
     spec_from_json,
     uses_custom_model_endpoint,
@@ -26,6 +28,10 @@ _INVALID_SANDBOX_NAME_CHARS = re.compile(r"[^A-Za-z0-9.-]")
 # Model names like "qwen3.5:122b" also end up in a git branch name, where
 # ":" and ".." are invalid, so the label is reduced to a safe subset.
 _INVALID_LABEL_CHARS = re.compile(r"[^A-Za-z0-9.-]+|\.{2,}")
+
+# Statuses `lifecycle.run_job` leaves alone when the same job is run again:
+# finished work isn't redone, and a waiting agent is answered, not relaunched.
+SKIPPED_ON_RERUN = ("succeeded", "awaiting_input")
 
 
 def sandbox_name_for(feature_id: str, spec: AgentSpec) -> str:
@@ -216,7 +222,10 @@ def record_queued(
     A job that already has a row keeps its status: `run_job` decides what
     to do from it -- skipping work that already succeeded, relaunching what
     failed -- and overwriting that with "queued" would lose that history.
-    Such a row still gets `run_id`, so it belongs to this run either way.
+    A row about to be relaunched gets `run_id`, since its next attempt
+    belongs to this run. One `run_job` will skip (see `SKIPPED_ON_RERUN`)
+    keeps its own: this run does no work on it, and re-stamping it would
+    move a finished job out of the run that actually produced it.
 
     Args:
         config: Orchestrator config.
@@ -226,8 +235,10 @@ def record_queued(
     with StateStore(config.state_db_path) as store:
         for feature, spec in jobs:
             sandbox_name = sandbox_name_for(feature.id, spec)
-            if store.get(sandbox_name) is not None:
-                store.upsert(sandbox_name, run_id=run_id)
+            existing = store.get(sandbox_name)
+            if existing is not None:
+                if existing["status"] not in SKIPPED_ON_RERUN:
+                    store.upsert(sandbox_name, run_id=run_id)
                 continue
             store.upsert(
                 sandbox_name,
@@ -239,4 +250,5 @@ def record_queued(
                 model=resolve_model(spec, config.agent_profiles.get(spec.agent_id), config),
                 run_label=spec.run_label,
                 repo=host_repo_path(config),
+                kits=json.dumps(resolve_kit_paths(spec, config.agent_profiles.get(spec.agent_id))),
             )

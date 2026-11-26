@@ -1,0 +1,13 @@
+# Verified false positives only, one fingerprint per finding.
+# Fingerprint format: commit:file:rule:line
+# Do not quote a flagged line in these comments: the comment itself gets scanned.
+
+# test_agent_otel.py line 156 is a test fixture whose matched value is a
+# duration in milliseconds, not a real secret.
+26aee8a3267beda811d4719ea692662bbac8bd25:tests/orchestrator/test_agent_otel.py:generic-api-key:156
+
+# The first version of this file quoted that fixture line in a comment, which
+# tripped the same rule. These are the commits that added it on each branch.
+a16cd03644a5f844ba6cf9c7acfe38694082982e:.gitleaksignore:generic-api-key:4
+52a34afa34de1867828e357ca46f0d7aa071b2db:.gitleaksignore:generic-api-key:4
+11917af7b4c490268e931540f371382b32c10508:.gitleaksignore:generic-api-key:4

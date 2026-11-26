@@ -58,7 +58,8 @@ the results tell you which setup works best for *your* code.
 5. Run everything from the web UI or from the terminal.
 
 Each finished job reports its diff size, whether tests and lint pass, wall-clock
-time and token usage.
+and agent time, token usage (input counts prompt-cache reads, so agents compare
+like for like), tool calls and model requests, and which skill kit it carried.
 
 ## Why Docker Sandboxes?
 
